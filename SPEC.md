@@ -70,7 +70,7 @@ Offset  Size  Field
 2       2     nameLen (u16), 后跟 nameLen 字节 UTF-8 文件名（发送端已 safeFileName 净化）
 …       2     mimeLen (u16), 后跟 mimeLen 字节 UTF-8 MIME
 …       4     fileLen (u32) 原始文件字节数
-…       2     segmentSize (u16) 固定 4194304 (4 MiB)
+…       4     segmentSize (u32) 固定 4194304 (4 MiB)
 …       2     segmentCount (u16)
 …       1     compressionMode (0=none, 1=gzip-auto)
 …       1     cryptoMode (0=none, 1=aes-256-gcm)
