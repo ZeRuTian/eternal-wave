@@ -23,6 +23,8 @@ const toChunk = (bytes: Uint8Array): WritableData => bytes as unknown as Writabl
 
 export interface StorageBackend {
   readonly kind: "desktop-dir" | "opfs";
+  /** 当前目录显示名（desktop：目录名；OPFS：固定文案）。 */
+  readonly label: string;
 
   /** 让用户选择目录（desktop）/ 打开 OPFS 根（PWA）。失败抛错。 */
   selectAndOpen(): Promise<void>;
@@ -79,6 +81,8 @@ export function createDesktopBackend(): StorageBackend {
   let partHandle: FileSystemFileHandle | null = null;
   let ckptHandle: FileSystemFileHandle | null = null;
   let fileLen = 0;
+  // 目录显示名（浏览器隐私限制：只能拿到目录名，没有完整路径）
+  let dirName = "";
 
   const partName = (): string => "eternal-wave.ewpart";
   const ckptName = (): string => "eternal-wave.ewckpt";
@@ -86,6 +90,10 @@ export function createDesktopBackend(): StorageBackend {
 
   return {
     kind: "desktop-dir",
+
+    get label() {
+      return dirName ? `已选择目录：${dirName}（已授权）` : "未选择目录";
+    },
 
     async selectAndOpen() {
       // 复用已有句柄前先确认读写权限：旧版本可能只授予了只读权限，
@@ -115,6 +123,7 @@ export function createDesktopBackend(): StorageBackend {
             showDirectoryPicker(options?: { mode?: "read" | "readwrite" }): Promise<FileSystemDirectoryHandle>;
           }
         ).showDirectoryPicker({ mode: "readwrite" });
+        dirName = dirHandle.name;
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") {
           throw new Error("已取消选择接收目录");
@@ -296,6 +305,9 @@ export function createOpfsBackend(): StorageBackend {
 
   return {
     kind: "opfs",
+    get label() {
+      return "PWA 存储（OPFS，应用私有空间）";
+    },
 
     async selectAndOpen() {
       if (root) return;

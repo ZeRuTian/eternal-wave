@@ -391,7 +391,7 @@ async function pickDirectory(): Promise<void> {
   try {
     if (!backend) backend = createAutoBackend();
     await backend.selectAndOpen();
-    dirLabel.textContent = `已选择目录：${backend.kind === "opfs" ? "PWA 存储" : "已授权"}`;
+    dirLabel.textContent = backend.label;
   } catch (err) {
     dirLabel.textContent = err instanceof Error ? err.message : String(err);
   }
@@ -483,7 +483,7 @@ async function start() {
   // StorageBackend 的幂等实现会直接返回，不会重复弹窗。
   try {
     await backend.selectAndOpen();
-    dirLabel.textContent = `已选择目录：${backend.kind === "opfs" ? "PWA 存储" : "已授权"}`;
+    dirLabel.textContent = backend.label;
   } catch (err) {
     offerRetry(err instanceof Error ? err.message : String(err));
     return;
