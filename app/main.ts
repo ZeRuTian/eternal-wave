@@ -426,12 +426,11 @@ function updateStartButton(): void {
 }
 // 屏幕捕获提示：发送端与接收端在不同窗口/不同机器，无法跨实例自动改
 // 发送端设置，因此在接收端给出操作提示（用户到发送端窗口手动调整）。
-const SCREEN_RECOMMEND_FPS = "60";
 const SCREEN_RECOMMEND_BYTES = "2953";
 function applyScreenRecommendations(): void {
   if (currentSource() !== "screen") return;
   recvStatus.setStatus(
-    `屏幕捕获已就绪。如需提速，请在发送端窗口将「帧率」调为 ${SCREEN_RECOMMEND_FPS}、「每帧字节数」调为 ${SCREEN_RECOMMEND_BYTES}。`,
+    `屏幕捕获已就绪。提速要点：① 发送端「每帧字节数」调到 ${SCREEN_RECOMMEND_BYTES}（+27%）；② 发送端「帧率」与接收端采集一致（采集帧率见上方状态）。`,
   );
 }
 
@@ -498,7 +497,10 @@ async function start() {
       // 与摄像头共用同一解码管线；无对焦/摩尔纹问题，吞吐通常更高。
       const displayStream = await navigator.mediaDevices.getDisplayMedia({
         audio: false,
-        video: { frameRate: { ideal: Math.min(captureFps, 30) } },
+        // 不人为限制帧率上限：请求用户设定值（ideal），系统支持则按
+        // 60fps 采集（屏幕捕获在多数桌面环境可达 60），不支持时浏览器
+        // 会自动降到实际值并在状态行显示。
+        video: { frameRate: { ideal: captureFps } },
       });
       stream = displayStream;
       // 用户在浏览器共享指示条上点"停止"时结束接收会话
