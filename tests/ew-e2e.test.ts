@@ -270,6 +270,70 @@ test("分段首次写盘失败后不会误标完成，后续帧可自动重试",
   assert.deepEqual(backend.parts.get(0), bytes);
 });
 
+test("存储初始化未完成时数据帧不会抢跑并造成 99% · 0/1 卡死", async () => {
+  // 小文件编码后 K=1：清单后的第一条数据帧即可解码完成，最容易撞上
+  // ensureTransfer/checkpoint 尚未结束的窗口，正是手机发送复现的时序。
+  const bytes = new TextEncoder().encode("手机端快速首帧");
+  const prepared = await prepareTransfer({
+    name: "mobile-first-frame.txt",
+    mime: "text/plain",
+    bytes,
+  });
+  let releaseEnsure!: () => void;
+  const ensureGate = new Promise<void>((resolve) => {
+    releaseEnsure = resolve;
+  });
+  class SlowInitBackend extends MemoryBackend {
+    ensureStarted = false;
+    ready = false;
+    writesBeforeReady = 0;
+
+    override async ensureTransfer() {
+      this.ensureStarted = true;
+      await ensureGate;
+      this.ready = true;
+      return true;
+    }
+
+    override async writeSegment(index: number, value: Uint8Array) {
+      if (!this.ready) this.writesBeforeReady++;
+      await super.writeSegment(index, value);
+    }
+  }
+  const backend = new SlowInitBackend();
+  backend.shaResult = sha256Once(bytes);
+  const receiver = new EwReceiver();
+  await receiver.attachBackend(backend);
+  const gen = frameStream(prepared);
+
+  receiver.handleFrame((await gen.next()).value as Uint8Array);
+  for (let i = 0; i < 20 && !backend.ensureStarted; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.equal(backend.ensureStarted, true, "应已进入慢速存储初始化");
+  assert.equal(receiver.hasManifest, false, "存储未就绪前不能向数据帧发布清单");
+
+  // 在初始化暂停期间继续送入清单和数据帧；它们应被丢弃而不是提前写盘。
+  for (let i = 0; i < 8; i++) {
+    receiver.handleFrame((await gen.next()).value as Uint8Array);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.equal(backend.writesBeforeReady, 0);
+
+  releaseEnsure();
+  for (let i = 0; i < 20 && !receiver.hasManifest; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.equal(receiver.hasManifest, true);
+  for (let i = 0; i < 200 && !receiver.isDone; i++) {
+    receiver.handleFrame((await gen.next()).value as Uint8Array);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.equal(receiver.isDone, true);
+  assert.equal(receiver.completed, 1);
+  assert.deepEqual(backend.parts.get(0), bytes);
+});
+
 test("中途发送端重启（新传输 ID）→ 接收端重置并按新流完成", async () => {
   const bytes = new Uint8Array(500_000);
   // 使用确定性的高熵数据，避免原先的 251 字节周期样本被 gzip 大幅压缩，

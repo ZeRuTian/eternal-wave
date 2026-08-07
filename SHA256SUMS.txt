@@ -1,2 +1,2 @@
-397f8b250dceb35e12d8320bdcadf5594425a73e41402ed493413e3e42932d05  dist/Eternal-Wave.html
-e1f59b043cf2473d7eb8b21be0a85faf017b3adce3f65efcf89be633ed78428d  Eternal-Wave-PWA.zip
+9d3d1081978ebc4a2142f7e6c1a30f51fb0660e3bbc34fd115437061404f384f  dist/Eternal-Wave.html
+ad6ec31180b83a8859b694b78127e62b669cc1240e01e7d1ccdd374061ebd616  Eternal-Wave-PWA.zip

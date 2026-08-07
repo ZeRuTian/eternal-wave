@@ -282,7 +282,7 @@ export class EwReceiver {
     }
     if (this.manifest && idHex === this.currentTransferIdHex) return; // 同一清单重复
     // 串行化：同一时间只处理一份清单。清单帧周期性重发，并发处理会重复
-    // 触发 onManifest/重复初始化存储；第一个处理中的清单会发布 manifest，
+    // 触发 onManifest/重复初始化存储；第一份清单完成存储初始化前，
     // 其余帧在此被拦截。
     if (this.manifestProcessing) return;
     this.manifestProcessing = true;
@@ -293,7 +293,7 @@ export class EwReceiver {
     }
   }
 
-  /** 清单校验通过后的落地逻辑：密钥派生 → 发布 → 存储初始化。 */
+  /** 清单校验通过后的落地逻辑：密钥派生 → 存储初始化 → 原子发布。 */
   private async applyManifest(
     m: TransferManifestV1,
     transferId: Uint8Array,
@@ -319,37 +319,33 @@ export class EwReceiver {
       }
     }
 
-    // 全部就绪后再发布
-    this.manifest = m;
-    this.currentTransferIdHex = idHex;
-    this.key = key;
-    this.manifestChunks.clear();
-
-    // 空间检查 + 初始化存储
+    // 空间检查 + 初始化存储。manifest 在整个阶段必须保持 null：对于 K=1
+    // 的小文件，清单后的首个数据帧就足以完成解码；若此时先发布 manifest，
+    // 分段会在 checkpoint 建立前写入，随后新 checkpoint 把进度覆盖回 0/1，
+    // 内存却已把该段标为完成，最终永久卡在 99%。
     if (this.backend) {
       let ok: boolean;
       try {
         ok = await this.backend.ensureTransfer(transferId, m.fileLen);
       } catch (err) {
-        // 初始化失败（如目录无写权限）：撤销 manifest 与已完成段标记，
-        // 否则数据帧会继续解码但写盘失败，表现为"99% 卡住"。
-        this.manifest = null;
+        // 初始化失败（如目录无写权限）：清空待接收状态，等待下一份清单重试。
         this.completedSegments.clear();
         this.decoders.clear();
         this.checkpoint = null;
+        this.manifestChunks.clear();
         this.cb.onError?.(err instanceof Error ? err.message : String(err));
         return;
       }
       if (!ok) {
         this.cb.onError?.("存储空间不足（需要 文件大小×1.25 + 16 MiB 以上），拒绝开始");
-        this.manifest = null;
         this.completedSegments.clear();
+        this.manifestChunks.clear();
         return;
       }
       this.checkpoint = newCheckpoint(transferId, m.segmentCount, m.fileLen);
       // 续传：若磁盘检查点属于同一传输（transferId 相同），沿用其完成位图
       const disk = await this.backend.loadCheckpoint();
-      if (disk && hex(disk.transferId) === this.currentTransferIdHex) {
+      if (disk && hex(disk.transferId) === idHex) {
         this.checkpoint = disk;
         for (let i = 0; i < disk.segmentCount; i++) {
           if (isSegmentComplete(disk, i)) this.completedSegments.add(i);
@@ -361,6 +357,12 @@ export class EwReceiver {
       this.checkpoint = newCheckpoint(transferId, m.segmentCount, m.fileLen);
     }
 
+    // 密钥、临时文件和 checkpoint 全部就绪后一次性发布。此前到达的数据帧
+    // 会被安全丢弃，发送端的无限帧流会自动补回，不需要排队占用内存。
+    this.manifest = m;
+    this.currentTransferIdHex = idHex;
+    this.key = key;
+    this.manifestChunks.clear();
     this.completed = completedCount(this.checkpoint);
     await this.cb.onManifest?.(m);
   }

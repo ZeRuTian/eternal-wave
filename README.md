@@ -55,7 +55,7 @@ iPhone 不能从本地 HTML 直接调用摄像头，接收端需提前以 PWA �
 npm install
 npm run build      # dist/Eternal-Wave.html（桌面单文件）
 npm run build:pwa  # dist-pwa/ + Eternal-Wave-PWA.zip（iOS 预装包）
-npm test           # 单元测试 + 模拟链路 e2e（153 项）
+npm test           # 单元测试 + 模拟链路 e2e（154 项）
 ```
 
 ## 产物

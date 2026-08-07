@@ -227,6 +227,7 @@ async function startStream(revealStage = false): Promise<void> {
   const version = probe.version;
   const modules = probe.modules.size;
   let announced = false;
+  let renderedFrameIndex = 0;
   let scale = 1;
   const staging = document.createElement("canvas");
   const queue: ImageData[] = [];
@@ -257,10 +258,15 @@ async function startStream(revealStage = false): Promise<void> {
     const next = await stream.next();
     if (next.done || !next.value) throw new Error("发送帧流意外结束");
     const bytes = next.value;
+    // K=1 的小文件每个喷泉块内容相同，只有帧头 seq 在变化。固定 QR mask
+    // 时肉眼几乎看不出动态，用户也难以判断手机 Safari 的 rAF 是否仍在运行。
+    // 在两个合法 mask 间交替，不改协议字节。每个 mask 保持 4 帧，30 fps
+    // 下约 7.5 Hz：肉眼能明确看见闪动，摄像头也有足够时间捕获完整图案。
+    const maskPattern = Math.floor(renderedFrameIndex++ / 4) % 2 === 0 ? 4 : 6;
     const qr = QRCode.create([{ data: bytes, mode: "byte" } as unknown as QRCode.QRCodeSegment], {
       errorCorrectionLevel: ecc,
       version,
-      maskPattern: 4,
+      maskPattern,
     });
     if (!announced) {
       announced = true;
@@ -269,7 +275,7 @@ async function startStream(revealStage = false): Promise<void> {
       }
       spec("spec-fps").textContent = `${txFps} fps`;
       spec("spec-frame").textContent = `${frameBytes} 字节`;
-      spec("spec-qr").textContent = `V${qr.version} · ECC ${ecc}`;
+      spec("spec-qr").textContent = `V${qr.version} · ECC ${ecc} · 动态掩码`;
       spec("spec-payload").textContent = `${name} · ${formatBytes(fileSize)}`;
       spec("spec-compression").textContent = prepared.manifest.allowGzip ? "按段自动（仅缩小时）" : "—";
       spec("spec-mode").textContent = prepared.coverage < 1.3 ? "高速（冗余 1.2）" : "稳健（冗余 1.35）";
