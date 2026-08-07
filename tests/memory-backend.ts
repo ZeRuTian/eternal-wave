@@ -1,5 +1,6 @@
 import type { StorageBackend } from "../shared/ew-storage.ts";
 import { sha256Once } from "../shared/ew-sha256.ts";
+import type { TransferCheckpointV1 } from "../shared/ew-checkpoint.ts";
 
 /** 内存版 StorageBackend（模拟 .ewpart/.ewckpt 语义），供接收端/链路测试使用。 */
 export class MemoryBackend implements StorageBackend {
@@ -9,6 +10,7 @@ export class MemoryBackend implements StorageBackend {
   selected = false;
   ensureOk = true;
   shaResult: Uint8Array | null = null;
+  checkpoint: TransferCheckpointV1 | null = null;
 
   async selectAndOpen() {
     this.selected = true;
@@ -17,7 +19,7 @@ export class MemoryBackend implements StorageBackend {
     return this.ensureOk;
   }
   async loadCheckpoint() {
-    return null;
+    return this.checkpoint;
   }
   async saveCheckpoint(_cp: unknown) {
     this.checkpoints.push(new Uint8Array(0));

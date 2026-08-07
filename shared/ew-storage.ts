@@ -64,6 +64,10 @@ function isBrowser(): boolean {
   return typeof window !== "undefined" && typeof crypto !== "undefined";
 }
 
+function sameTransferId(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
 // ================= 桌面目录后端 =================
 
 export function createDesktopBackend(): StorageBackend {
@@ -84,7 +88,18 @@ export function createDesktopBackend(): StorageBackend {
     kind: "desktop-dir",
 
     async selectAndOpen() {
+      if (dirHandle) return;
       dirHandle = await (window as unknown as { showDirectoryPicker(): Promise<FileSystemDirectoryHandle> }).showDirectoryPicker();
+      try {
+        ckptHandle = await dirHandle.getFileHandle(ckptName());
+      } catch {
+        ckptHandle = null;
+      }
+      try {
+        partHandle = await dirHandle.getFileHandle(partName());
+      } catch {
+        partHandle = null;
+      }
     },
 
     async ensureTransfer(transferId: Uint8Array, fileLen_: number) {
@@ -101,14 +116,27 @@ export function createDesktopBackend(): StorageBackend {
       } catch {
         /* 忽略，放行 */
       }
+      const existingCheckpoint = await this.loadCheckpoint();
+      const canResume =
+        partHandle !== null &&
+        existingCheckpoint !== null &&
+        sameTransferId(existingCheckpoint.transferId, transferId) &&
+        existingCheckpoint.fileLen === fileLen;
       partHandle = await dirHandle.getFileHandle(partName(), { create: true });
       ckptHandle = await dirHandle.getFileHandle(ckptName(), { create: true });
+      if (!canResume) {
+        // 新传输必须清空旧 .ewpart；否则较短文件会把旧尾部带入 SHA-256。
+        const w = await partHandle.createWritable();
+        await w.truncate(0);
+        await w.close();
+      }
       return true;
     },
 
     async loadCheckpoint() {
-      if (!dirHandle || !ckptHandle) return null;
+      if (!dirHandle) return null;
       try {
+        if (!ckptHandle) ckptHandle = await dirHandle.getFileHandle(ckptName());
         const file = await ckptHandle.getFile();
         if (file.size === 0) return null;
         return parseCheckpoint(new Uint8Array(await file.arrayBuffer()));
@@ -217,7 +245,18 @@ export function createOpfsBackend(): StorageBackend {
     kind: "opfs",
 
     async selectAndOpen() {
+      if (root) return;
       root = await navigator.storage.getDirectory();
+      try {
+        ckptHandle = await root.getFileHandle(ckptName());
+      } catch {
+        ckptHandle = null;
+      }
+      try {
+        partHandle = await root.getFileHandle(partName());
+      } catch {
+        partHandle = null;
+      }
     },
 
     async ensureTransfer(transferId: Uint8Array, fileLen_: number) {
@@ -228,14 +267,26 @@ export function createOpfsBackend(): StorageBackend {
       const usage = est.usage ?? 0;
       const need = fileLen * 1.25 + 16 * 1024 * 1024;
       if (quota > 0 && quota - usage < need) return false;
+      const existingCheckpoint = await this.loadCheckpoint();
+      const canResume =
+        partHandle !== null &&
+        existingCheckpoint !== null &&
+        sameTransferId(existingCheckpoint.transferId, transferId) &&
+        existingCheckpoint.fileLen === fileLen;
       partHandle = await root.getFileHandle(partName(), { create: true });
       ckptHandle = await root.getFileHandle(ckptName(), { create: true });
+      if (!canResume) {
+        const w = await partHandle.createWritable();
+        await w.truncate(0);
+        await w.close();
+      }
       return true;
     },
 
     async loadCheckpoint() {
-      if (!root || !ckptHandle) return null;
+      if (!root) return null;
       try {
+        if (!ckptHandle) ckptHandle = await root.getFileHandle(ckptName());
         const file = await ckptHandle.getFile();
         if (file.size === 0) return null;
         return parseCheckpoint(new Uint8Array(await file.arrayBuffer()));

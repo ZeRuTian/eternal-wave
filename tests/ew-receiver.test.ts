@@ -7,6 +7,7 @@ import { SEGMENT_SIZE, crc32, packFrame, type FrameHeader } from "../shared/ew-p
 import { FRAME_TYPE_DATA, FRAME_TYPE_MANIFEST } from "../shared/ew-protocol.ts";
 import { encodeManifest, type TransferManifestV1 } from "../shared/ew-manifest.ts";
 import { sha256Once } from "../shared/ew-sha256.ts";
+import { markSegmentComplete, newCheckpoint } from "../shared/ew-checkpoint.ts";
 
 function makeManifest(overrides: Partial<TransferManifestV1> = {}): TransferManifestV1 {
   const fileLen = 1000; // 1 段
@@ -164,6 +165,42 @@ test("传输 ID 变化 → 重置为新传输", async () => {
   recv.handleFrame(manifestFrame(m2, tidB));
   await new Promise((r) => setTimeout(r, 10));
   assert.ok(recv.hasManifest);
+});
+
+test("从旧检查点恢复后遇到新传输：清除旧完成位图并正常接收", async () => {
+  const tidA = new Uint8Array(16).fill(0xaa);
+  const tidB = new Uint8Array(16).fill(0xbb);
+  const old = newCheckpoint(tidA, 1, 1000);
+  markSegmentComplete(old, 0);
+  class ResumeBackend extends MemoryBackend {
+    override async loadCheckpoint() {
+      return old as ReturnType<typeof newCheckpoint>;
+    }
+  }
+  const backend = new ResumeBackend();
+  const recv = new EwReceiver();
+  await recv.attachBackend(backend);
+  assert.equal(recv.completed, 1);
+
+  recv.handleFrame(manifestFrame(makeManifest(), tidB));
+  await new Promise((r) => setTimeout(r, 10));
+  recv.handleFrame(dataFrame(tidB, 0, new Uint8Array(1000).fill(7)));
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.equal(backend.parts.has(0), true);
+});
+
+test("接收端统计唯一帧与重复帧", async () => {
+  const tid = new Uint8Array(16).fill(0xcc);
+  const recv = new EwReceiver();
+  recv.handleFrame(manifestFrame(makeManifest(), tid));
+  await new Promise((r) => setTimeout(r, 10));
+  const frame = dataFrame(tid, 0, new Uint8Array(1000).fill(7));
+  recv.handleFrame(frame);
+  recv.handleFrame(frame);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(recv.framesNew, 1);
+  assert.equal(recv.framesDup, 1);
 });
 
 test("空间不足 → 拒绝开始", async () => {

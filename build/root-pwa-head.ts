@@ -79,7 +79,12 @@ if ("serviceWorker" in navigator) {
         }
 
         const next = html
-          .replace(MANIFEST_LINK, `<link rel="manifest" href="${prefix}manifest.webmanifest">`)
+          .replace(
+            MANIFEST_LINK,
+            `<link rel="manifest" href="${prefix}manifest.webmanifest">` +
+              `<link rel="icon" type="image/png" sizes="192x192" href="${prefix}icon-192.png">` +
+              `<link rel="apple-touch-icon" href="${prefix}apple-touch-icon.png">`,
+          )
           .replace("</body>", `<script>${registration(prefix)}</script></body>`);
 
         // Resolve what we just wrote the way a browser would, from a page served

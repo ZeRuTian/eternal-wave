@@ -1,89 +1,66 @@
-# Decimen Optical Transfer: fountain-coded QR file transfer
+# Eternal Wave 动态二维码文件传输
 
-Send a file between two devices using nothing but a **screen and a camera**.
-One page displays the file as an endless stream of animated QR codes; another
-device points its camera at it and reconstructs the file. **No network path
-between the devices, no app, no pairing, no permissions beyond the camera.**
-The payload travels as light.
+用屏幕和摄像头传输文件，不经过网络。发送端把文件编码成不断变化的动态二维码，
+接收端用摄像头扫描并还原文件——两台设备之间没有任何网络路径。
 
-## Try it
+- 简体中文单页，发送/接收一体
+- 单文件上限 256 MB，按 4 MiB 分段（每段独立压缩、喷泉编码、校验）
+- 可选口令加密：PBKDF2-HMAC-SHA-256(600,000 次) + AES-256-GCM，口令不落盘
+- 接收端支持中断续传（刷新页面后重选同一目录即可恢复）
+- 运行期间零网络请求，不引 CDN、不上传文件、不含遥测
+- 派生自 [Decimen Optical Transfer](https://github.com/bashalarmistalt/decimen-optical-transfer)
+  （MIT，保留作者署名）；协议为独立的 Eternal Wave Protocol v1，与上游不兼容
 
-### **→ [decimen.app](https://decimen.app/)**
+## 快速开始（桌面）
 
-Open it on both devices and go — nothing to install. Works offline after the
-first visit, and installs as an app on both iOS and Android if you want it on
-a home screen.
+1. 复制 `dist/Eternal-Wave.html` 到 U 盘（或任意电脑）。
+2. 用 Chrome / Edge 109+（Windows x64、银河麒麟 V10 SP1 x86_64/ARM64、Linux）双击打开。
+3. 发送端：点击「发送文件」→ 选择文件 →（可选）输入加密口令 → 屏幕出现动态二维码。
+4. 接收端：在另一台设备打开同一文件 → 点击「接收文件」→「选择保存目录」→「启动摄像头」，
+   对准发送端屏幕。传输完成后自动校验 SHA-256 并保存。
 
-Files up to 64 MB (or a pasted text snippet), filename and media type
-preserved, gzip only when it helps, SHA-256 verified before anything is
-offered — and received video plays right in the page. Extracted from a larger
-experiment that reached **128 KB/s phone-to-phone**.
+> 浏览器必须允许使用摄像头和选择本地目录；企业安全策略禁用这些权限时无法绕过。
 
-<p align="center">
-  <img src="docs/receiving.jpg" width="420"
-       alt="Phone receiving a file over light: 130.5 KB/s goodput, halfway through decoding the sender's animated QR stream" />
-</p>
-<p align="center"><em>Mid-transfer: a phone pulling a file out of the air at 130 KB/s.</em></p>
+## iPhone / iPad（PWA 预装）
 
-Neither mode is encrypted: whatever is on the sending screen is readable by
-any camera pointed at it. The property this gives you is no network, not
-confidentiality — see [privacy](docs/user/privacy.md).
+iPhone 不能从本地 HTML 直接调用摄像头，接收端需提前以 PWA 方式安装：
 
-## Documentation
+1. 将 `dist-pwa/` 部署到任意 HTTPS 服务器（或解压 `Eternal-Wave-PWA.zip` 后托管）。
+2. 用 Safari 打开页面 → 分享按钮 → 「添加到主屏幕」。
+3. 安装完成后可完全离线使用（开启飞行模式验证）。
 
-**Using it** — [quick start](docs/user/quick-start.md) ·
-[sending](docs/user/sending.md) · [receiving](docs/user/receiving.md) ·
-[troubleshooting](docs/user/troubleshooting.md) ·
-[install & offline](docs/user/install-and-offline.md) ·
-[privacy](docs/user/privacy.md)
+## 传输设置
 
-**How it's built** — [architecture](docs/technical/architecture.md) ·
-[protocol](docs/technical/protocol.md) ·
-[platform quirks](docs/technical/platform-quirks.md) ·
-[build & release](docs/technical/build-and-release.md)
+- **帧率 (fps)**：10–60，默认 30。接收端解码吃力时降低。
+- **每帧字节数**：500–2953，默认 2331。画面噪点多时降低到 1465。
+- **纠错级别**：默认 L（喷泉码已处理丢帧，无需高纠错）。
+- **加密口令**：发送端设置后，接收端扫描时会被要求输入同一口令。
 
-The short version of the protocol: a screen-to-camera link has no
-back-channel, so the sender streams fountain-coded frames ([Luby
-transform](https://en.wikipedia.org/wiki/Luby_transform_code)) — the receiver
-collects *any* ~K·1.15 distinct frames in any order and peels the file out.
-Dropped frames cost time, never correctness.
+## 安全说明
 
-## Run it yourself
+- 加密只保护二维码光学传输内容；接收后保存到本地的文件由操作系统权限保护。
+- 口令遗失不可恢复；口令不写入二维码、检查点或日志。
+- 接收端对所有帧头做严格上限校验（长度、段数、块数、压缩炸弹等），
+  恶意构造的二维码无法触发大额内存分配。
+
+## 构建
 
 ```bash
 npm install
-npm run dev               # https dev server with HMR
-npm run serve             # build, then serve the production bundle
-npm run demo              # demo mode: only the bundled payloads can be sent
-npm test                  # golden wire-format vectors and unit tests
-npm run build             # the hosted site → dist/
-npm run build:standalone  # both self-contained pages → dist-standalone/
-npm run build:all         # everything
+npm run build      # dist/Eternal-Wave.html（桌面单文件）
+npm run build:pwa  # dist-pwa/ + Eternal-Wave-PWA.zip（iOS 预装包）
+npm test           # 单元测试 + 模拟链路 e2e（146 项）
 ```
 
-Open `https://localhost:5173/send/` on the sending device and the printed
-`Network` URL on the receiving phone (accept the self-signed certificate
-once). Walkthrough: [quick start](docs/user/quick-start.md).
+## 产物
 
-## Similar projects
+- `dist/Eternal-Wave.html` — 桌面主产物（单文件，file:// 双击即用）
+- `dist-pwa/` + `Eternal-Wave-PWA.zip` — iOS 预装包
+- `SHA256SUMS.txt` — 以上产物的校验和
+- `LICENSE` — MIT（含上游署名与派生声明）
 
-The concept here was arrived at independently. It turns out several people
-have had similar ideas, and their takes are all worth a look:
+## 已知限制
 
-- [mohankumarelec/airgapped-qr-code-transfer](https://github.com/mohankumarelec/airgapped-qr-code-transfer):
-  browser-based QR file transfer with compression and sequential chunking.
-  Discovered after publicly demoing this project; convergent evolution in
-  action.
-- [divan/txqr](https://github.com/divan/txqr) (2018): animated QR plus
-  fountain codes in Go, with two excellent write-ups on why fountain coding
-  beats sequential looping.
-- [sz3/libcimbar](https://github.com/sz3/libcimbar): goes past QR entirely
-  with a custom high-density color code purpose-built for this channel.
-
-Built by [Evan Crawley (Bash Alarmist)](https://www.linkedin.com/in/evan-crawley), with
-[node-qrcode](https://github.com/soldair/node-qrcode) and
-[zxing-wasm](https://github.com/Sec-ant/zxing-wasm).
-
-## License
-
-MIT
+- 浏览器策略禁止摄像头/目录选择时无法使用（网页无法绕过）。
+- 第一版一次只传一个文件；不支持目录、批量文件与文本片段。
+- 发送端重启后视为新传输，接收端续传仅针对同一仍在播放的发送会话。

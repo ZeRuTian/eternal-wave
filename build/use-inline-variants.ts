@@ -11,16 +11,19 @@ import { resolve } from "node:path";
  * targets stay anchored there no matter where this file lives.
  */
 export function useInlineVariants(rootDir: string): Plugin {
-  const swaps = new Map([
-    ["./worker-factory", "receive/worker-factory.inline.ts"],
-    ["./wasm-url", "receive/wasm-url.inline.ts"],
-  ]);
   return {
     name: "use-inline-variants",
     enforce: "pre",
     resolveId(source) {
-      const target = swaps.get(source);
-      return target ? resolve(rootDir, target) : null;
+      // 按文件名后缀匹配：无论调用方用什么相对路径（./worker-factory、
+      // ../receive/worker-factory），都替换为 inline 变体。
+      if (source === "./worker-factory" || source.endsWith("/worker-factory")) {
+        return resolve(rootDir, "receive/worker-factory.inline.ts");
+      }
+      if (source === "./wasm-url" || source.endsWith("/wasm-url")) {
+        return resolve(rootDir, "receive/wasm-url.inline.ts");
+      }
+      return null;
     },
   };
 }

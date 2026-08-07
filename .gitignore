@@ -1,5 +1,7 @@
 node_modules/
 dist/
+dist-pwa/
+Eternal-Wave-PWA.zip
 *.local
 .DS_Store
 dist-standalone/

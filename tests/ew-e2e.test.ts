@@ -209,14 +209,18 @@ test("30% 丢帧 + 10% 重复 + 乱序：2MB 随机数据", async () => {
 
 test("中途发送端重启（新传输 ID）→ 接收端重置并按新流完成", async () => {
   const bytes = new Uint8Array(500_000);
-  for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 13) % 251;
+  // 使用确定性的高熵数据，避免原先的 251 字节周期样本被 gzip 大幅压缩，
+  // 导致第一条流在“重启”前已经完成，测试实际上没有覆盖会话切换。
+  const dataRnd = mulberry32(0x4557);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(dataRnd() * 256);
   const rnd = mulberry32(8);
+  let manifestsSeen = 0;
 
   // 第一段流：发一半后"重启"
   const preparedA = await prepareTransfer({ name: "a.bin", mime: "application/octet-stream", bytes });
   const backend = new MemoryBackend();
   backend.shaResult = sha256Once(bytes);
-  const receiver = new EwReceiver();
+  const receiver = new EwReceiver({ onManifest: () => { manifestsSeen++; } });
   await receiver.attachBackend(backend);
   const genA = frameStream(preparedA);
   for (let i = 0; i < 300; i++) {
@@ -224,16 +228,22 @@ test("中途发送端重启（新传输 ID）→ 接收端重置并按新流完�
     if (rnd() < 0.3) continue;
     receiver.handleFrame(f);
   }
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(receiver.isDone, false, "第一条流在重启前不应完成");
   // 发送端重启：新 transferId
   const preparedB = await prepareTransfer({ name: "a.bin", mime: "application/octet-stream", bytes });
   assert.notDeepEqual(preparedA.transferId, preparedB.transferId);
   const genB = frameStream(preparedB);
-  for (let i = 0; i < 2_000_000 && !receiver.isDone; i++) {
+  for (let i = 0; i < 10_000 && !receiver.isDone; i++) {
     const f = genB.next().value as Uint8Array;
     if (rnd() < 0.3) continue;
     receiver.handleFrame(f);
+    // 真实 UI 按摄像头帧率输入；定期让出事件循环，避免同步测试制造数百万
+    // 个 Promise 微任务并饿死分段恢复/检查点写入。
+    if ((i & 0xff) === 0) await new Promise((r) => setTimeout(r, 0));
   }
   await new Promise((r) => setTimeout(r, 20));
+  assert.ok(manifestsSeen >= 2, `应接受重启前后两份清单，实际 ${manifestsSeen}`);
   assert.ok(receiver.isDone);
   assert.deepEqual(backend.parts.get(0), bytes);
 });

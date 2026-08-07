@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Eternal Wave 动态二维码文件传输</title>
+    <meta
+      name="description"
+      content="用屏幕和摄像头传输文件，不经过网络。喷泉编码动态二维码，屏幕到摄像头，零网络路径。"
+    />
+    <meta name="theme-color" content="#070a11" />
+    <link rel="stylesheet" href="../shared/style.css" />
+  </head>
+  <body class="tool-page ew-page">
+    <header class="site-header">
+      <span class="brand"><svg class="brand-logo" viewBox="0 0 543 554.1" fill="currentColor" aria-hidden="true"><g transform="translate(-241,789) scale(0.1,-0.1)"><path d="M2410 6513 l0 -1378 103 101 c540 531 1324 986 1984 1153 402 102 850 95 1268 -21 529 -146 1300 -581 1860 -1050 175 -146 212 -184 199 -205 -37 -63 -502 -432 -754 -600 -969 -644 -1785 -844 -2590 -634 -667 174 -1376 581 -1947 1118 l-123 115 0 -1382 0 -1381 1478 4 c1291 3 1491 5 1588 20 1345 194 2240 1124 2355 2446 17 195 7 620 -19 786 -192 1236 -1030 2069 -2262 2249 -217 32 -411 36 -1772 36 l-1368 0 0 -1377z"/><path d="M4945 5906 c-300 -68 -532 -287 -611 -577 -25 -89 -25 -289 0 -378 141 -513 724 -749 1179 -477 405 242 503 778 209 1148 -100 125 -258 229 -417 273 -82 22 -282 29 -360 11z"/></g></svg>Eternal Wave</span>
+      <!-- 单页内切换发送/接收 -->
+      <nav class="mode-nav" aria-label="模式">
+        <a href="#send" id="nav-send">发送文件</a>
+        <a href="#receive" id="nav-receive">接收文件</a>
+      </nav>
+    </header>
+
+    <main class="send-shell" id="pane-send">
+      <section class="tool-intro">
+        <p class="eyebrow">屏幕 → 摄像头</p>
+        <h1 id="tool-title">发送文件</h1>
+        <p>文件只在本机，扫描即可传走。支持最大 %MAX_FILE_LABEL%，可选口令加密。</p>
+      </section>
+
+      <div class="mode-picker" id="mode-picker" role="radiogroup" aria-label="发送内容" hidden>
+        <label>
+          <input type="radio" name="send-mode" value="file" checked />
+          <span>文件</span>
+        </label>
+      </div>
+
+      <label class="file-picker" id="pane-file">
+        <span class="file-picker-button" id="file-picker-button">选择文件</span>
+        <span class="file-picker-text" id="file-picker-label">任意文件 · 最大 %MAX_FILE_LABEL%</span>
+        <input id="cfg-file" type="file" />
+      </label>
+
+      <div class="ew-passphrase">
+        <label for="cfg-passphrase">加密口令（可选）</label>
+        <input id="cfg-passphrase" type="password" autocomplete="off" placeholder="留空则不加密" />
+      </div>
+
+      <div class="stage" id="stage" hidden><canvas id="qr" width="16" height="16"></canvas></div>
+
+      <details class="settings">
+        <summary>传输设置</summary>
+        <div class="row">
+          <label>
+            帧率 (fps)
+            <select id="cfg-fps">%TX_FPS_OPTIONS%</select>
+          </label>
+          <label>
+            每帧字节数
+            <select id="cfg-bytes">%FRAME_BYTES_OPTIONS%</select>
+          </label>
+          <label>
+            纠错级别
+            <select id="cfg-ecc">
+              <option selected>L</option><option>M</option><option>Q</option><option>H</option>
+            </select>
+          </label>
+          <label>
+            显示大小
+            <input id="cfg-size" type="range" min="300" max="1200" step="50" value="900" />
+          </label>
+        </div>
+        <dl class="stream-specs" id="stream-specs" hidden>
+          <div><dt>发送速率</dt><dd id="spec-fps">—</dd></div>
+          <div><dt>帧载荷</dt><dd id="spec-frame">—</dd></div>
+          <div><dt>二维码</dt><dd id="spec-qr">—</dd></div>
+          <div><dt>正在发送</dt><dd id="spec-payload">—</dd></div>
+          <div><dt>压缩</dt><dd id="spec-compression">—</dd></div>
+          <div><dt>喷泉块数</dt><dd id="spec-k">—</dd></div>
+          <div><dt>分段</dt><dd id="spec-segments">—</dd></div>
+        </dl>
+      </details>
+
+      <div class="hint status-line" id="specs">选择文件开始</div>
+      <div class="hint footer-hint" id="footer-hint" hidden>
+        在另一台设备上打开「接收文件」。调亮本机屏幕。
+      </div>
+    </main>
+
+    <main class="receiver-shell" id="pane-receive" hidden>
+      <section class="receiver-primary">
+        <div class="receiver-heading">
+          <div>
+            <p class="eyebrow">摄像头 → 本机</p>
+            <h1 id="tool-title-recv">接收文件</h1>
+          </div>
+          <div class="hint status-line" id="stats">准备扫描</div>
+        </div>
+
+        <div class="ew-recv-actions">
+          <button id="start">启动摄像头</button>
+          <button id="pick-dir" class="secondary-button" type="button">选择保存目录</button>
+          <span id="dir-label" class="hint">未选择目录</span>
+        </div>
+
+        <div class="preview-zone" id="preview" style="display: none">
+          <div class="no-signal-toast" id="no-signal" role="status" hidden>
+            <span>长时间未解码到帧</span>
+            <button id="no-signal-help" class="text-button" type="button">帮助</button>
+            <button id="no-signal-dismiss" class="text-button no-signal-dismiss" type="button">知道了</button>
+          </div>
+          <div class="preview">
+            <video id="video" muted playsinline></video>
+            <div class="transfer-hud">
+              <div class="progress-status" id="progress-status" style="display: none" aria-live="polite">
+                <strong id="progress-label">0% · 0 帧</strong>
+                <span id="eta-label">估算剩余时间…</span>
+              </div>
+              <div class="progress" id="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="bar"></div></div>
+              <div class="ew-segment-grid" id="segment-grid" hidden></div>
+            </div>
+          </div>
+        </div>
+        <div id="result"></div>
+
+        <dialog class="help-dialog" id="no-signal-dialog" aria-labelledby="no-signal-title">
+          <h2 id="no-signal-title" tabindex="-1" autofocus>故障排查</h2>
+          <ul id="no-signal-tips"></ul>
+          <button id="no-signal-close" class="secondary-button" type="button">知道了</button>
+        </dialog>
+
+        <details class="settings diagnostics" id="diagnostics" style="display: none">
+          <summary>传输详情</summary>
+          <div class="metrics" id="metrics" style="display: none">
+            <div class="metric"><div class="k">采集 fps</div><div class="v" id="m-cap">—</div></div>
+            <div class="metric"><div class="k">解码 fps</div><div class="v amber" id="m-dec">—</div></div>
+            <div class="metric"><div class="k">有效速率</div><div class="v amber" id="m-rate">—</div></div>
+            <div class="metric"><div class="k">已用时间</div><div class="v" id="m-time">—</div></div>
+            <div class="metric"><div class="k">新帧/重复</div><div class="v" id="m-frames">—</div></div>
+            <div class="metric"><div class="k">已收分段</div><div class="v" id="m-segments">—</div></div>
+          </div>
+        </details>
+
+        <details class="settings" id="settings">
+          <summary>接收设置</summary>
+          <div class="row">
+            <label>
+              摄像头
+              <select id="cfg-camera"><option value="">自动选择</option></select>
+            </label>
+            <label>
+              分辨率
+              <select id="cfg-width"><option>960</option><option selected>1280</option><option>1920</option></select>
+            </label>
+            <label>
+              采集帧率
+              <select id="cfg-capfps"><option>30</option><option selected>60</option></select>
+            </label>
+            <label>
+              解码线程
+              <select id="cfg-workers"><option>1</option><option selected>2</option><option>3</option></select>
+            </label>
+          </div>
+          <p class="hint settings-actual" id="camera-actual">摄像头启动后生效。</p>
+        </details>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span class="footer-id">
+        <span>Eternal Wave 动态二维码文件传输</span>
+        <span>v%APP_VERSION% · build %BUILD_ID% · 派生自 Decimen Optical Transfer © 2026 Evan Crawley (Bash Alarmist) · MIT</span>
+      </span>
+    </footer>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

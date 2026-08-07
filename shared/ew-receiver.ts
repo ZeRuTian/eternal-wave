@@ -14,7 +14,7 @@
 // 段原始长度 → 采用；否则视为未压缩。误判率 2^-16，且解压失败会回退。
 
 import { LTDecoder } from "./fountain";
-import { FRAME_TYPE_MANIFEST, SEGMENT_SIZE, parseFrame, type ParsedFrame } from "./ew-protocol";
+import { FRAME_TYPE_MANIFEST, SEGMENT_COVERAGE, SEGMENT_SIZE, parseFrame, type ParsedFrame } from "./ew-protocol";
 import { deriveOrigLen, joinManifestFrames, parseManifest, type TransferManifestV1 } from "./ew-manifest";
 import { recoverSegment } from "./ew-segment";
 import { deriveKey } from "./ew-crypto";
@@ -98,6 +98,23 @@ export class EwReceiver {
     return this.manifest;
   }
 
+  /** 供 UI 使用的连续进度；已完成段 + 正在解码段的唯一帧比例。 */
+  get progressInfo(): { fraction: number; completed: number; total: number } | null {
+    if (!this.manifest) return null;
+    if (this.done) return { fraction: 1, completed: this.manifest.segmentCount, total: this.manifest.segmentCount };
+    let segmentUnits = this.completedSegments.size;
+    for (const [index, dec] of this.decoders) {
+      if (this.completedSegments.has(index)) continue;
+      const expectedFrames = Math.max(dec.k + 1, Math.ceil(dec.k * SEGMENT_COVERAGE));
+      segmentUnits += Math.min(0.99, dec.framesNew / expectedFrames);
+    }
+    return {
+      fraction: Math.min(0.99, segmentUnits / this.manifest.segmentCount),
+      completed: this.completed,
+      total: this.manifest.segmentCount,
+    };
+  }
+
   /** 输入一帧原始字节（QR 解码产物）。任何异常都被捕获并转成 onError。 */
   handleFrame(frameBytes: Uint8Array): void {
     if (this.done) return;
@@ -145,7 +162,11 @@ export class EwReceiver {
       dec = new LTDecoder(h.k, h.blockLen, sessionSeed(h.transferId), segParam.encodedLen);
       this.decoders.set(h.segmentIndex, dec);
     }
+    const newBefore = dec.framesNew;
+    const dupBefore = dec.framesDup;
     dec.addFrame(h.seq, frame.payload);
+    this.framesNew += dec.framesNew - newBefore;
+    this.framesDup += dec.framesDup - dupBefore;
     if (dec.isComplete) {
       // 立即同步标记：该段已进入"解码完成"状态，后续帧直接忽略，
       // 防止 recoverSegment/persist 的异步窗口内重复执行整段解压与写盘。
@@ -175,6 +196,12 @@ export class EwReceiver {
     const idHex = hex(transferId);
     if (this.manifest && idHex !== this.currentTransferIdHex) {
       this.resetForNewTransfer(transferId);
+    } else if (this.currentTransferIdHex && !this.manifest && idHex !== this.currentTransferIdHex) {
+      // attachBackend() 可能已从磁盘恢复旧传输的位图，但清单尚未到达。
+      // 清空旧 completedSegments，否则新传输的同序号分段会被误判为“已完成”并永久忽略。
+      this.completedSegments.clear();
+      this.completed = 0;
+      this.currentTransferIdHex = idHex;
     }
     if (index >= total || total > 64) return; // 防御：分片数上限
     this.manifestChunks.set(index, payload);

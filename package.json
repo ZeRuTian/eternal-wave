@@ -1,20 +1,22 @@
 {
-  "name": "decimen-optical-transfer",
+  "name": "eternal-wave",
   "private": true,
   "version": "0.3.0",
   "license": "MIT",
-  "description": "Offline file and text transfer using fountain-coded animated QR codes — screen to camera, no network.",
+  "description": "Offline file transfer using fountain-coded animated QR codes — screen to camera, no network. 简体中文单页，支持最大 256 MB。",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "serve": "npm run build && vite preview",
-    "demo": "vite --mode demo",
-    "build": "tsc && tsc -p tsconfig.node.json && vite build",
-    "build:standalone": "node -e \"require('node:fs').rmSync('dist-standalone',{recursive:true,force:true})\" && tsc && vite build --mode standalone-send && vite build --mode standalone-receive",
-    "build:all": "npm run build && npm run build:standalone",
+    "typecheck": "tsc && tsc -p tsconfig.node.json",
+    "build:standalone": "vite build --mode standalone",
+    "build:pwa:only": "vite build && node build/zip-pwa.mjs",
+    "build": "npm run typecheck && npm run build:standalone",
+    "build:pwa": "npm run typecheck && npm run build:pwa:only",
+    "build:all": "npm run typecheck && npm run build:standalone && npm run build:pwa:only",
     "preview": "vite preview",
     "icons": "node --import tsx build/make-icons.ts",
-    "test": "node --import tsx --test tests/*.test.ts"
+    "test": "node --import tsx --test tests/*.test.ts",
+    "verify:release": "node build/verify-release.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
