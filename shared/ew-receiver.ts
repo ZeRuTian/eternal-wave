@@ -263,10 +263,23 @@ export class EwReceiver {
 
     // 空间检查 + 初始化存储
     if (this.backend) {
-      const ok = await this.backend.ensureTransfer(transferId, m.fileLen);
+      let ok: boolean;
+      try {
+        ok = await this.backend.ensureTransfer(transferId, m.fileLen);
+      } catch (err) {
+        // 初始化失败（如目录无写权限）：撤销 manifest 与已完成段标记，
+        // 否则数据帧会继续解码但写盘失败，表现为"99% 卡住"。
+        this.manifest = null;
+        this.completedSegments.clear();
+        this.decoders.clear();
+        this.checkpoint = null;
+        this.cb.onError?.(err instanceof Error ? err.message : String(err));
+        return;
+      }
       if (!ok) {
         this.cb.onError?.("存储空间不足（需要 文件大小×1.25 + 16 MiB 以上），拒绝开始");
         this.manifest = null;
+        this.completedSegments.clear();
         return;
       }
       this.checkpoint = newCheckpoint(transferId, m.segmentCount, m.fileLen);

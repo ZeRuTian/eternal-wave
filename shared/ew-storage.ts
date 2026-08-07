@@ -88,18 +88,41 @@ export function createDesktopBackend(): StorageBackend {
     kind: "desktop-dir",
 
     async selectAndOpen() {
-      if (dirHandle) return;
-      dirHandle = await (window as unknown as { showDirectoryPicker(): Promise<FileSystemDirectoryHandle> }).showDirectoryPicker();
-      try {
-        ckptHandle = await dirHandle.getFileHandle(ckptName());
-      } catch {
-        ckptHandle = null;
+      // 复用已有句柄前先确认读写权限：旧版本可能只授予了只读权限，
+      // 直接复用会在后续写入时报错。queryPermission 不需要用户手势。
+      if (dirHandle) {
+        try {
+          const perm = await (dirHandle as FileSystemDirectoryHandle & {
+            queryPermission?: (o?: { mode?: "read" | "readwrite" }) => Promise<PermissionState>;
+          }).queryPermission?.({ mode: "readwrite" });
+          if (perm === "granted") {
+            // 权限足够，复用；子句柄稍后由 ensureTransfer 重建
+            ckptHandle = null;
+            partHandle = null;
+            return;
+          }
+        } catch {
+          /* 降级：重新弹窗选择 */
+        }
+        dirHandle = null;
       }
       try {
-        partHandle = await dirHandle.getFileHandle(partName());
-      } catch {
-        partHandle = null;
+        // 必须请求 readwrite 权限：接收端要创建/写入 .ewpart 与 .ewckpt。
+        // 只读权限（showDirectoryPicker 默认）会在后续无用户手势的异步
+        // 解码流程里被 getFileHandle 拒绝（User activation required）。
+        dirHandle = await (
+          window as unknown as {
+            showDirectoryPicker(options?: { mode?: "read" | "readwrite" }): Promise<FileSystemDirectoryHandle>;
+          }
+        ).showDirectoryPicker({ mode: "readwrite" });
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          throw new Error("已取消选择接收目录");
+        }
+        throw new Error(`无法选择接收目录：${err instanceof Error ? err.message : String(err)}`);
       }
+      ckptHandle = null;
+      partHandle = null;
     },
 
     async ensureTransfer(transferId: Uint8Array, fileLen_: number) {
@@ -117,13 +140,31 @@ export function createDesktopBackend(): StorageBackend {
         /* 忽略，放行 */
       }
       const existingCheckpoint = await this.loadCheckpoint();
+      // .ewpart 是否已存在（不带 create 探测：存在则成功，否则抛 NotFoundError）
+      let hasExistingPart = false;
+      try {
+        await dirHandle.getFileHandle(partName());
+        hasExistingPart = true;
+      } catch {
+        hasExistingPart = false;
+      }
       const canResume =
-        partHandle !== null &&
+        hasExistingPart &&
         existingCheckpoint !== null &&
         sameTransferId(existingCheckpoint.transferId, transferId) &&
         existingCheckpoint.fileLen === fileLen;
-      partHandle = await dirHandle.getFileHandle(partName(), { create: true });
-      ckptHandle = await dirHandle.getFileHandle(ckptName(), { create: true });
+      try {
+        partHandle = await dirHandle.getFileHandle(partName(), { create: true });
+        ckptHandle = await dirHandle.getFileHandle(ckptName(), { create: true });
+      } catch (err) {
+        // 权限不足或句柄失效：清空句柄，避免留下"半初始化"状态让后续
+        // writeSegment 报"尚未初始化传输"而不是给出可操作的提示。
+        partHandle = null;
+        ckptHandle = null;
+        throw new Error(
+          `无法在所选目录写入临时文件（需要读写权限）。请重新选择目录并确认授权：${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       if (!canResume) {
         // 新传输必须清空旧 .ewpart；否则较短文件会把旧尾部带入 SHA-256。
         const w = await partHandle.createWritable();
@@ -268,8 +309,16 @@ export function createOpfsBackend(): StorageBackend {
       const need = fileLen * 1.25 + 16 * 1024 * 1024;
       if (quota > 0 && quota - usage < need) return false;
       const existingCheckpoint = await this.loadCheckpoint();
+      // .ewpart 是否已存在（不带 create 探测）
+      let hasExistingPart = false;
+      try {
+        await root.getFileHandle(partName());
+        hasExistingPart = true;
+      } catch {
+        hasExistingPart = false;
+      }
       const canResume =
-        partHandle !== null &&
+        hasExistingPart &&
         existingCheckpoint !== null &&
         sameTransferId(existingCheckpoint.transferId, transferId) &&
         existingCheckpoint.fileLen === fileLen;
