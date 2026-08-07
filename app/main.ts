@@ -418,24 +418,15 @@ populateWorkerChoices();
 function updateStartButton(): void {
   startBtn.textContent = currentSource() === "screen" ? "开始屏幕捕获" : "启动摄像头";
 }
-// 屏幕捕获自动高配：切到屏幕捕获时，若发送端尚未开始传输，把帧率/每帧字节
-// 调到屏幕捕获的推荐值（60fps + 2953B，画面干净无摩尔纹，高密度码可读）。
+// 屏幕捕获提示：发送端与接收端在不同窗口/不同机器，无法跨实例自动改
+// 发送端设置，因此在接收端给出操作提示（用户到发送端窗口手动调整）。
 const SCREEN_RECOMMEND_FPS = "60";
 const SCREEN_RECOMMEND_BYTES = "2953";
-let userTunedSendSettings = false;
 function applyScreenRecommendations(): void {
-  if (currentSource() !== "screen" || userTunedSendSettings || selectedFile) return;
-  const fps = document.getElementById("cfg-fps") as HTMLSelectElement;
-  const bytes = document.getElementById("cfg-bytes") as HTMLSelectElement;
-  if ([...fps.options].some((o) => o.value === SCREEN_RECOMMEND_FPS)) fps.value = SCREEN_RECOMMEND_FPS;
-  if ([...bytes.options].some((o) => o.value === SCREEN_RECOMMEND_BYTES)) bytes.value = SCREEN_RECOMMEND_BYTES;
-  recvStatus.setStatus("已为屏幕捕获推荐 60fps + 2953B/帧；手动调整发送设置后不再自动覆盖。");
-}
-// 用户手动改发送设置后，记录为"已调优"，停止自动覆盖
-for (const id of ["cfg-fps", "cfg-bytes", "cfg-ecc", "cfg-size"]) {
-  document.getElementById(id)!.addEventListener("change", () => {
-    userTunedSendSettings = true;
-  });
+  if (currentSource() !== "screen") return;
+  recvStatus.setStatus(
+    `屏幕捕获已就绪。如需提速，请在发送端窗口将「帧率」调为 ${SCREEN_RECOMMEND_FPS}、「每帧字节数」调为 ${SCREEN_RECOMMEND_BYTES}。`,
+  );
 }
 
 for (const input of document.querySelectorAll<HTMLInputElement>('input[name="recv-source"]')) {
