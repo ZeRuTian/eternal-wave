@@ -35,13 +35,15 @@ export interface ReceiverCallbacks {
   /** 错误（中文消息）。 */
   onError?: (message: string) => void;
   /** 需要口令时请求（返回口令；返回 null 表示用户取消）。 */
-  requestPassphrase?: (name: string) => Promise<string | null>;
+  requestPassphrase?: (name: string, reason?: string) => Promise<string | null>;
 }
 
 export class EwReceiver {
   private manifest: TransferManifestV1 | null = null;
   private manifestChunks = new Map<number, Uint8Array>();
   private decoders = new Map<number, LTDecoder>();
+  /** 已完成喷泉解码、正在解密/写盘的段；与“已持久化完成”严格分开。 */
+  private processingSegments = new Set<number>();
   /** 已完成段（同步跟踪，避免 checkpoint 位图异步更新窗口内重复解码）。 */
   private completedSegments = new Set<number>();
   /** 清单处理中（串行化标志，防止周期性重发的清单帧并发重复落地）。 */
@@ -98,6 +100,10 @@ export class EwReceiver {
     return this.manifest;
   }
 
+  get completedIndexes(): readonly number[] {
+    return Array.from(this.completedSegments).sort((a, b) => a - b);
+  }
+
   /** 供 UI 使用的连续进度；已完成段 + 正在解码段的唯一帧比例。 */
   get progressInfo(): { fraction: number; completed: number; total: number } | null {
     if (!this.manifest) return null;
@@ -148,6 +154,10 @@ export class EwReceiver {
       this.framesDup++;
       return; // 已完成段：忽略
     }
+    if (this.processingSegments.has(h.segmentIndex)) {
+      this.framesDup++;
+      return;
+    }
     const segParam = this.manifest.segmentParams[h.segmentIndex];
     if (!segParam) return;
     // 帧头与清单一致性校验（防御伪造帧）
@@ -168,23 +178,77 @@ export class EwReceiver {
     this.framesNew += dec.framesNew - newBefore;
     this.framesDup += dec.framesDup - dupBefore;
     if (dec.isComplete) {
-      // 立即同步标记：该段已进入"解码完成"状态，后续帧直接忽略，
-      // 防止 recoverSegment/persist 的异步窗口内重复执行整段解压与写盘。
-      this.completedSegments.add(h.segmentIndex);
-      this.decoders.delete(h.segmentIndex);
+      // “正在处理”不能冒充“已经落盘”。旧实现提前写入 completedSegments，
+      // 一旦口令错误或写盘失败，后续帧会永久被忽略，传输只能卡死。
+      this.processingSegments.add(h.segmentIndex);
       const envelope = dec.assemble()!;
       const origLen = deriveOrigLen(h.segmentIndex, this.manifest.fileLen, SEGMENT_SIZE);
-      const recovered = await recoverSegment(envelope, segParam, h.segmentIndex, {
-        key: this.key,
-        origLen,
-      });
-      await this.persistSegment(h.segmentIndex, recovered);
+      try {
+        const recovered = await this.recoverWithPassphraseRetry(
+          envelope,
+          segParam,
+          h.segmentIndex,
+          origLen,
+        );
+        if (!recovered) return;
+        await this.persistSegment(h.segmentIndex, recovered);
+        this.decoders.delete(h.segmentIndex);
+      } finally {
+        this.processingSegments.delete(h.segmentIndex);
+      }
     }
     this.cb.onStats?.({
       framesSeen: this.framesSeen,
       framesNew: this.framesNew,
       framesDup: this.framesDup,
     });
+  }
+
+  /** 口令只在首个加密段上得到真实性验证；失败时允许原地重试一次。 */
+  private async recoverWithPassphraseRetry(
+    envelope: Uint8Array,
+    params: TransferManifestV1["segmentParams"][number],
+    index: number,
+    origLen: number,
+  ): Promise<Uint8Array | null> {
+    try {
+      return await recoverSegment(envelope, params, index, { key: this.key, origLen });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!this.manifest?.encrypted || !message.includes("解密失败")) throw err;
+      this.passphraseCache.delete(this.currentTransferIdHex);
+      const pass = await this.cb.requestPassphrase?.(
+        this.manifest.name,
+        "口令不正确或数据无法认证，请重新输入。",
+      );
+      if (!pass || !this.manifest.salt) {
+        this.pauseForPassphrase();
+        this.cb.onError?.("已暂停加密传输，等待下一次清单后重新输入口令");
+        return null;
+      }
+      const retryKey = await deriveKey(pass, this.manifest.salt, this.manifest.pbkdf2Iterations);
+      try {
+        const recovered = await recoverSegment(envelope, params, index, {
+          key: retryKey,
+          origLen,
+        });
+        this.key = retryKey;
+        this.passphraseCache.set(this.currentTransferIdHex, pass);
+        return recovered;
+      } catch (retryErr) {
+        this.passphraseCache.delete(this.currentTransferIdHex);
+        this.pauseForPassphrase();
+        throw retryErr;
+      }
+    }
+  }
+
+  /** 放弃当前清单/解码器但保留已落盘检查点，等待周期性清单重新开始。 */
+  private pauseForPassphrase(): void {
+    this.manifest = null;
+    this.manifestChunks.clear();
+    this.decoders.clear();
+    this.key = null;
   }
 
   private async handleManifestFrame(
@@ -309,6 +373,7 @@ export class EwReceiver {
       markSegmentComplete(this.checkpoint, index);
       if (this.backend) await this.backend.saveCheckpoint(this.checkpoint);
     }
+    this.completedSegments.add(index);
     this.completed = this.checkpoint ? completedCount(this.checkpoint) : this.completed + 1;
     this.cb.onSegmentComplete?.(index, this.manifest?.segmentCount ?? 0);
     if (this.checkpoint && completedCount(this.checkpoint) >= this.checkpoint.segmentCount) {
@@ -340,6 +405,7 @@ export class EwReceiver {
     this.manifest = null;
     this.manifestChunks.clear();
     this.decoders.clear();
+    this.processingSegments.clear();
     this.completedSegments.clear();
     this.checkpoint = null;
     this.key = null;

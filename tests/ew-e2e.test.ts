@@ -69,7 +69,7 @@ async function runLink(
   const collect: Uint8Array[] | null = opts.shuffle ? [] : null;
   const MAX_SYNC_FRAMES = 2_000_000;
   for (let i = 0; i < (maxFrames > 0 ? maxFrames : MAX_SYNC_FRAMES); i++) {
-    const frame = gen.next();
+    const frame = await gen.next();
     if (frame.done) break;
     const f = frame.value as Uint8Array;
     if (rnd() < dropRate) continue; // 丢帧
@@ -182,14 +182,14 @@ test("加密链路：错误口令 → 解密失败提示，不完成", async () 
   const gen = frameStream(prepared);
   // PBKDF2 600k 次派生需要数百毫秒：先喂清单帧，等 manifest 就绪后再喂数据帧
   for (let i = 0; i < 10; i++) {
-    receiver.handleFrame(gen.next().value as Uint8Array);
+    receiver.handleFrame((await gen.next()).value as Uint8Array);
     if (receiver.hasManifest) break;
     await new Promise((r) => setTimeout(r, 50));
   }
   assert.ok(receiver.hasManifest, "清单应就绪");
   // 数据帧循环（等清单发布后再喂）
   for (let i = 0; i < 20000 && !receiver.isDone; i++) {
-    const f = gen.next().value as Uint8Array;
+    const f = (await gen.next()).value as Uint8Array;
     if (rnd() < 0.2) continue;
     receiver.handleFrame(f);
     if ((i & 0x3ff) === 0) await new Promise((r) => setTimeout(r, 0));
@@ -197,6 +197,36 @@ test("加密链路：错误口令 → 解密失败提示，不完成", async () 
   await new Promise((r) => setTimeout(r, 100));
   assert.equal(receiver.isDone, false);
   assert.ok(errs.some((e) => e.includes("解密失败")), `应出现解密失败，实际: ${errs.join(";")}`);
+});
+
+test("加密链路：首个口令错误后原地重试正确口令并完成", async () => {
+  const bytes = new TextEncoder().encode("需要重试口令的数据".repeat(600));
+  const prepared = await prepareTransfer({
+    name: "retry-secret.bin",
+    mime: "application/octet-stream",
+    bytes: new Blob([bytes]),
+    passphrase: "真实口令",
+  });
+  const backend = new MemoryBackend();
+  backend.shaResult = sha256Once(bytes);
+  let prompts = 0;
+  const receiver = new EwReceiver({
+    requestPassphrase: async (_name, reason) => {
+      prompts++;
+      return reason ? "真实口令" : "错误口令";
+    },
+  });
+  await receiver.attachBackend(backend);
+  const gen = frameStream(prepared);
+  for (let i = 0; i < 20_000 && !receiver.isDone; i++) {
+    const frame = (await gen.next()).value as Uint8Array;
+    receiver.handleFrame(frame);
+    if ((i & 0x7f) === 0) await new Promise((r) => setTimeout(r, 0));
+  }
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(prompts, 2, "应先询问一次，再因认证失败重试一次");
+  assert.equal(receiver.isDone, true);
+  assert.deepEqual(backend.parts.get(0), bytes);
 });
 
 test("30% 丢帧 + 10% 重复 + 乱序：2MB 随机数据", async () => {
@@ -209,6 +239,34 @@ test("30% 丢帧 + 10% 重复 + 乱序：2MB 随机数据", async () => {
     shuffle: true,
   });
   assert.ok(receiver.isDone, `应完成（用了 ${framesUsed} 帧）`);
+  assert.deepEqual(backend.parts.get(0), bytes);
+});
+
+test("分段首次写盘失败后不会误标完成，后续帧可自动重试", async () => {
+  const bytes = new TextEncoder().encode("写盘失败恢复".repeat(500));
+  const prepared = await prepareTransfer({ name: "flaky.bin", mime: "application/octet-stream", bytes });
+  class FlakyBackend extends MemoryBackend {
+    writes = 0;
+    override async writeSegment(index: number, value: Uint8Array) {
+      this.writes++;
+      if (this.writes === 1) throw new Error("模拟瞬时写盘失败");
+      await super.writeSegment(index, value);
+    }
+  }
+  const backend = new FlakyBackend();
+  backend.shaResult = sha256Once(bytes);
+  const errors: string[] = [];
+  const receiver = new EwReceiver({ onError: (message) => errors.push(message) });
+  await receiver.attachBackend(backend);
+  const gen = frameStream(prepared);
+  for (let i = 0; i < 20_000 && !receiver.isDone; i++) {
+    receiver.handleFrame((await gen.next()).value as Uint8Array);
+    if ((i & 0x7f) === 0) await new Promise((r) => setTimeout(r, 0));
+  }
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(errors.some((message) => message.includes("写盘失败")));
+  assert.ok(backend.writes >= 2, "应再次尝试写入同一分段");
+  assert.equal(receiver.isDone, true);
   assert.deepEqual(backend.parts.get(0), bytes);
 });
 
@@ -229,7 +287,7 @@ test("中途发送端重启（新传输 ID）→ 接收端重置并按新流完�
   await receiver.attachBackend(backend);
   const genA = frameStream(preparedA);
   for (let i = 0; i < 300; i++) {
-    const f = genA.next().value as Uint8Array;
+    const f = (await genA.next()).value as Uint8Array;
     if (rnd() < 0.3) continue;
     receiver.handleFrame(f);
   }
@@ -240,7 +298,7 @@ test("中途发送端重启（新传输 ID）→ 接收端重置并按新流完�
   assert.notDeepEqual(preparedA.transferId, preparedB.transferId);
   const genB = frameStream(preparedB);
   for (let i = 0; i < 10_000 && !receiver.isDone; i++) {
-    const f = genB.next().value as Uint8Array;
+    const f = (await genB.next()).value as Uint8Array;
     if (rnd() < 0.3) continue;
     receiver.handleFrame(f);
     // 真实 UI 按摄像头帧率输入；定期让出事件循环，避免同步测试制造数百万

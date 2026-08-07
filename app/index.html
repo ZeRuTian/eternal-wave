@@ -25,7 +25,12 @@
       <section class="tool-intro">
         <p class="eyebrow">屏幕 → 摄像头</p>
         <h1 id="tool-title">发送文件</h1>
-        <p>文件只在本机，扫描即可传走。支持最大 %MAX_FILE_LABEL%，可选口令加密。</p>
+        <p class="tool-lede">文件只在本机，扫描即可传走。无需联网、配对或安装客户端。</p>
+        <div class="capability-strip" aria-label="产品能力">
+          <span><strong>完全离线</strong> 零网络请求</span>
+          <span><strong>%MAX_FILE_LABEL%</strong> 单文件上限</span>
+          <span><strong>SHA-256</strong> 完成后校验</span>
+        </div>
       </section>
 
       <div class="mode-picker" id="mode-picker" role="radiogroup" aria-label="发送内容" hidden>
@@ -42,8 +47,14 @@
       </label>
 
       <div class="ew-passphrase">
-        <label for="cfg-passphrase">加密口令（可选）</label>
-        <input id="cfg-passphrase" type="password" autocomplete="off" placeholder="留空则不加密" />
+        <span class="field-copy">
+          <label for="cfg-passphrase">加密口令（可选）</label>
+          <small>口令只留在本机，不会写入二维码或日志</small>
+        </span>
+        <span class="password-control">
+          <input id="cfg-passphrase" type="password" autocomplete="off" placeholder="留空则不加密" />
+          <button id="toggle-passphrase" class="text-button" type="button" aria-pressed="false">显示</button>
+        </span>
       </div>
 
       <div class="stage" id="stage" hidden><canvas id="qr" width="16" height="16"></canvas></div>
@@ -101,24 +112,40 @@
           <div>
             <p class="eyebrow">摄像头 → 本机</p>
             <h1 id="tool-title-recv">接收文件</h1>
+            <p class="receiver-copy">选择输入源和保存位置，再对准发送端的动态二维码。</p>
           </div>
           <div class="hint status-line" id="stats">准备扫描</div>
         </div>
 
-        <div class="ew-recv-actions">
-          <div class="ew-source-picker" role="radiogroup" aria-label="输入源">
-            <label>
-              <input type="radio" name="recv-source" value="camera" checked />
-              <span>摄像头</span>
-            </label>
-            <label>
-              <input type="radio" name="recv-source" value="screen" />
-              <span>屏幕捕获（同机互传）</span>
-            </label>
+        <div class="receive-setup">
+          <div class="setup-grid">
+            <section class="setup-step" aria-labelledby="source-step-title">
+              <div class="step-heading">
+                <span class="step-index">1</span>
+                <span><strong id="source-step-title">选择输入源</strong><small>另一台设备用摄像头，同机用屏幕捕获</small></span>
+              </div>
+              <div class="ew-source-picker" role="radiogroup" aria-label="输入源">
+                <label>
+                  <input type="radio" name="recv-source" value="camera" checked />
+                  <span>摄像头</span>
+                </label>
+                <label>
+                  <input type="radio" name="recv-source" value="screen" />
+                  <span>屏幕捕获</span>
+                </label>
+              </div>
+            </section>
+            <section class="setup-step" aria-labelledby="storage-step-title">
+              <div class="step-heading">
+                <span class="step-index">2</span>
+                <span><strong id="storage-step-title">确认保存位置</strong><small>分段会暂存于此，刷新后可续传</small></span>
+              </div>
+              <button id="pick-dir" class="secondary-button" type="button">选择保存目录</button>
+              <span id="dir-label" class="storage-status" aria-live="polite">尚未选择目录</span>
+            </section>
           </div>
-          <button id="start">启动摄像头</button>
-          <button id="pick-dir" class="secondary-button" type="button">选择保存目录</button>
-          <span id="dir-label" class="hint">未选择目录</span>
+          <button id="start" class="receive-start">开始接收</button>
+          <p class="setup-note">首次启动会申请摄像头或屏幕捕获权限，文件内容不会离开本机。</p>
         </div>
 
         <div class="preview-zone" id="preview" style="display: none">
@@ -145,6 +172,21 @@
           <h2 id="no-signal-title" tabindex="-1" autofocus>故障排查</h2>
           <ul id="no-signal-tips"></ul>
           <button id="no-signal-close" class="secondary-button" type="button">知道了</button>
+        </dialog>
+
+        <dialog class="help-dialog passphrase-dialog" id="receive-passphrase-dialog" aria-labelledby="receive-passphrase-title">
+          <form id="receive-passphrase-form">
+            <p class="eyebrow">加密传输</p>
+            <h2 id="receive-passphrase-title">输入接收口令</h2>
+            <p id="receive-passphrase-copy">请输入发送端设置的口令。</p>
+            <label for="receive-passphrase">加密口令</label>
+            <input id="receive-passphrase" type="password" autocomplete="off" required />
+            <p class="dialog-error" id="receive-passphrase-error" hidden></p>
+            <div class="dialog-actions">
+              <button id="receive-passphrase-cancel" class="secondary-button" type="button">取消接收</button>
+              <button type="submit">确认口令</button>
+            </div>
+          </form>
         </dialog>
 
         <details class="settings diagnostics" id="diagnostics" style="display: none">

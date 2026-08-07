@@ -27,7 +27,7 @@ test("256 MB 上限文件（64 段，可压缩）完整链路", async () => {
   const gen = frameStream(prepared);
   const rnd = mulberry32(42);
   for (let i = 0; i < 3_000_000 && !receiver.isDone; i++) {
-    const f = gen.next().value as Uint8Array;
+    const f = (await gen.next()).value as Uint8Array;
     if (rnd() < 0.2) continue;
     receiver.handleFrame(f);
     if ((i & 0x3ff) === 0) await new Promise((r) => setTimeout(r, 0));

@@ -70,6 +70,21 @@ function sameTransferId(a: Uint8Array, b: Uint8Array): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
+async function removeEntry(dir: FileSystemDirectoryHandle | null, name: string): Promise<void> {
+  if (!dir) return;
+  try {
+    await dir.removeEntry(name);
+  } catch {
+    // 某些早期 Chromium 只暴露 handle.remove；作为兼容回退。
+    try {
+      const handle = await dir.getFileHandle(name);
+      await (handle as RemoveableFileHandle).remove?.();
+    } catch {
+      /* 文件不存在或环境不支持删除。 */
+    }
+  }
+}
+
 // ================= 桌面目录后端 =================
 
 export function createDesktopBackend(): StorageBackend {
@@ -263,19 +278,19 @@ export function createDesktopBackend(): StorageBackend {
           await w.write(toChunk(new Uint8Array(value.buffer, value.byteOffset, take)));
           remaining -= take;
         }
+        if (remaining !== 0) throw new Error(`临时文件不完整，仍缺少 ${remaining} 字节`);
+        await w.close();
+      } catch (err) {
+        await w.abort().catch(() => undefined);
+        throw err;
       } finally {
         reader.releaseLock();
       }
-      await w.close();
     },
 
     async cleanupTemp() {
       for (const n of [partName(), ckptName(), ckptTmpName()]) {
-        try {
-          await dirHandle?.getFileHandle(n).then((h) => (h as RemoveableFileHandle).remove?.());
-        } catch {
-          /* 忽略 */
-        }
+        await removeEntry(dirHandle, n);
       }
     },
 
@@ -429,11 +444,7 @@ export function createOpfsBackend(): StorageBackend {
 
     async cleanupTemp() {
       for (const n of [partName(), ckptName(), ckptTmpName()]) {
-        try {
-          await root?.getFileHandle(n).then((h) => (h as RemoveableFileHandle).remove?.());
-        } catch {
-          /* 忽略 */
-        }
+        await removeEntry(root, n);
       }
     },
 

@@ -135,10 +135,11 @@ export function parseFrame(bytes: Uint8Array): ParsedFrame | null {
     if (header.k === 0 || header.k > MAX_SOURCE_BLOCKS) return null;
     if (header.segmentIndex >= header.segmentCount) return null;
     if (header.segmentLen === 0 || header.segmentLen > MAX_SEGMENT_ENCODED) return null;
-    // k 个块必须能恰好覆盖 segmentLen（最后一个块可不满）
-    if (header.k > Math.ceil(header.segmentLen / header.blockLen)) return null;
-    // 兼容性：文件总长与段数关系（最后一段可不满）
-    if (header.segmentCount > Math.ceil(header.fileLen / SEGMENT_SIZE)) return null;
+    // k 个块必须恰好覆盖 segmentLen（最后一个块可不满）。只校验“不能更大”
+    // 会接受容量不足的伪造头，并把错误推迟到更深的接收状态机。
+    if (header.k !== Math.ceil(header.segmentLen / header.blockLen)) return null;
+    // 文件总长与段数必须完全一致（最后一段可不满）。
+    if (header.segmentCount !== Math.ceil(header.fileLen / SEGMENT_SIZE)) return null;
   }
 
   const payload = bytes.subarray(HEADER_LEN);

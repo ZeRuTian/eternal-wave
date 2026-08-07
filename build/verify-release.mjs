@@ -73,7 +73,10 @@ const license = readFileSync(resolve(root, "LICENSE"), "utf8");
 check(license.includes("Copyright (c) 2026 Evan Crawley (Bash Alarmist)"), "LICENSE 缺少上游版权行");
 check(license.includes("Copyright (c) 2026 Eternal Wave contributors"), "LICENSE 缺少派生版权行");
 const readme = readFileSync(resolve(root, "README.md"), "utf8");
-check(readme.includes("## 桌面使用") && readme.includes("## iPhone / iPad PWA"), "README 中文使用说明不完整");
+check(
+  readme.includes("## 快速开始（桌面）") && readme.includes("## iPhone / iPad（PWA 预装）"),
+  "README 中文使用说明不完整",
+);
 
 console.log(`standalone=${(statSync(standalonePath).size / 1024).toFixed(1)} KiB`);
 console.log(`pwa_zip=${(statSync(zipPath).size / 1024).toFixed(1)} KiB`);

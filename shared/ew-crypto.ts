@@ -76,8 +76,8 @@ export async function encryptSegment(
   plain: Uint8Array,
   key: CryptoKey,
   segmentIndex: number,
+  noncePrefix: Uint8Array = randomNoncePrefix(),
 ): Promise<{ data: Uint8Array; noncePrefix: Uint8Array }> {
-  const noncePrefix = randomNoncePrefix();
   const nonce = buildNonce(noncePrefix, segmentIndex);
   const cipher = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv: nonce as BufferSource, tagLength: GCM_TAG_LEN * 8 },

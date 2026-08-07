@@ -30,23 +30,39 @@ import { createAutoBackend, type StorageBackend } from "../shared/ew-storage";
 const MARGIN = 4;
 const LOOKAHEAD = 3;
 
+/** 统一的错误消息提取：Error 取 message，其余 String 化。 */
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 // ---------------- 面板切换 ----------------
 const paneSend = document.getElementById("pane-send")!;
 const paneReceive = document.getElementById("pane-receive")!;
 const navSend = document.getElementById("nav-send")!;
 const navReceive = document.getElementById("nav-receive")!;
+let currentPane: "send" | "receive" | null = null;
 
 function showPane(pane: "send" | "receive"): void {
+  if (currentPane === pane) return;
+  if (currentPane === "send") {
+    generation++;
+    setStageFullscreen(false);
+  } else if (currentPane === "receive") {
+    stopReceiveSession();
+  }
   const send = pane === "send";
   paneSend.hidden = !send;
   paneReceive.hidden = send;
   navSend.classList.toggle("current", send);
   navReceive.classList.toggle("current", !send);
+  navSend.setAttribute("aria-current", send ? "page" : "false");
+  navReceive.setAttribute("aria-current", send ? "false" : "page");
+  currentPane = pane;
+  if (send && selectedFile?.prepared) void startStream(false);
   window.scrollTo(0, 0);
 }
 navSend.addEventListener("click", () => showPane("send"));
 navReceive.addEventListener("click", () => showPane("receive"));
-if (location.hash === "#receive") showPane("receive");
 
 // ---------------- 发送端 ----------------
 const canvas = document.getElementById("qr") as HTMLCanvasElement;
@@ -59,11 +75,11 @@ const paneFile = document.getElementById("pane-file")!;
 const streamSpecs = document.getElementById("stream-specs")!;
 const footerHint = document.getElementById("footer-hint")!;
 const cfgPassphrase = document.getElementById("cfg-passphrase") as HTMLInputElement;
+const togglePassphrase = document.getElementById("toggle-passphrase") as HTMLButtonElement;
 const spec = (id: string) => document.getElementById(id)!;
 
 let selectedFile: {
   file: File;
-  bytes: Uint8Array;
   prepared: PreparedTransfer | null;
 } | null = null;
 let generation = 0;
@@ -80,7 +96,8 @@ function setStageFullscreen(on: boolean): void {
   if (on === document.body.classList.contains("qr-full")) return;
   document.body.classList.toggle("qr-full", on);
   resizeDisplay?.();
-  window.scrollTo(0, on ? 0 : 0);
+  // 进入全屏时滚到顶部让二维码居中占满；退出时保持当前位置即可。
+  if (on) window.scrollTo(0, 0);
 }
 stage.addEventListener("click", () => setStageFullscreen(!document.body.classList.contains("qr-full")));
 window.addEventListener("keydown", (event) => {
@@ -126,13 +143,12 @@ async function selectFile(): Promise<void> {
     if (file.size > MAX_FILE_BYTES) {
       throw new Error(`${file.name} 为 ${formatBytes(file.size)}，超过 ${MAX_FILE_LABEL} 上限。`);
     }
-    const bytes = new Uint8Array(await file.arrayBuffer());
     if (selectionGeneration !== generation) return;
-    selectedFile = { file, bytes, prepared: null };
+    selectedFile = { file, prepared: null };
     updateFilePicker();
     await prepareSelectedFile(true);
   } catch (error) {
-    showError(error instanceof Error ? error.message : String(error));
+    showError(errMsg(error));
     updateFilePicker();
   }
 }
@@ -152,17 +168,21 @@ async function prepareSelectedFile(revealStage = false): Promise<void> {
     const prepared = await prepareTransfer({
       name: current.file.name,
       mime: current.file.type,
-      bytes: current.bytes,
+      bytes: current.file,
       frameBytes: Number((document.getElementById("cfg-bytes") as HTMLSelectElement).value),
       passphrase: passphrase || undefined,
       coverage: mode === "fast" ? 1.2 : 1.35,
+      onPrepareProgress: (completed, total) => {
+        if (gen !== generation) return;
+        setStatus(`正在分析 ${current.file.name}… ${completed}/${total} 段`);
+      },
     });
     if (gen !== generation || selectedFile !== current) return;
     current.prepared = prepared;
     await startStream(revealStage);
   } catch (error) {
     if (gen !== generation) return;
-    showError(error instanceof Error ? error.message : String(error));
+    showError(errMsg(error));
   }
 }
 
@@ -233,8 +253,10 @@ async function startStream(revealStage = false): Promise<void> {
   sizeCanvas();
   resizeDisplay = sizeCanvas;
 
-  const makeFrame = (): ImageData => {
-    const bytes = stream.next().value as Uint8Array;
+  const makeFrame = async (): Promise<ImageData> => {
+    const next = await stream.next();
+    if (next.done || !next.value) throw new Error("发送帧流意外结束");
+    const bytes = next.value;
     const qr = QRCode.create([{ data: bytes, mode: "byte" } as unknown as QRCode.QRCodeSegment], {
       errorCorrectionLevel: ecc,
       version,
@@ -251,7 +273,7 @@ async function startStream(revealStage = false): Promise<void> {
       spec("spec-payload").textContent = `${name} · ${formatBytes(fileSize)}`;
       spec("spec-compression").textContent = prepared.manifest.allowGzip ? "按段自动（仅缩小时）" : "—";
       spec("spec-mode").textContent = prepared.coverage < 1.3 ? "高速（冗余 1.2）" : "稳健（冗余 1.35）";
-      spec("spec-k").textContent = `段内 K = ${Math.ceil(prepared.segments[0]!.length / blockLen)}`;
+      spec("spec-k").textContent = `段内 K = ${Math.ceil(prepared.manifest.segmentParams[0]!.encodedLen / blockLen)}`;
       spec("spec-segments").textContent = `${prepared.manifest.segmentCount} 段 · 每段 4 MiB`;
       showStreamPanels(true);
       setStatus(`正在发送 ${name} — ${prepared.manifest.encrypted ? "已加密 · " : ""}等待接收端扫描`);
@@ -261,16 +283,24 @@ async function startStream(revealStage = false): Promise<void> {
   };
 
   let generatorFailed = false;
-  const pump = (max = LOOKAHEAD) => {
-    if (generatorFailed || gen !== generation) return;
+  let pumping = false;
+  const pump = async (max = LOOKAHEAD): Promise<void> => {
+    if (pumping || generatorFailed || gen !== generation) return;
+    pumping = true;
     try {
-      for (let n = 0; n < max && queue.length < LOOKAHEAD; n++) queue.push(makeFrame());
+      for (let n = 0; n < max && queue.length < LOOKAHEAD; n++) {
+        const image = await makeFrame();
+        if (gen !== generation) return;
+        queue.push(image);
+      }
     } catch (err) {
       generatorFailed = true;
-      showError(err instanceof Error ? err.message : String(err));
+      showError(errMsg(err));
+    } finally {
+      pumping = false;
     }
   };
-  pump();
+  void pump();
 
   const interval = 1000 / txFps;
   let nextAt = performance.now();
@@ -279,7 +309,7 @@ async function startStream(revealStage = false): Promise<void> {
     requestAnimationFrame(tick);
     if (now < nextAt) return;
     const img = queue.shift();
-    pump(1);
+    void pump(1);
     if (!img) {
       nextAt = now + interval;
       return;
@@ -304,6 +334,12 @@ document.getElementById("cfg-mode")!.addEventListener("change", () => {
 cfgPassphrase.addEventListener("change", () => {
   if (selectedFile) void prepareSelectedFile();
 });
+togglePassphrase.addEventListener("click", () => {
+  const reveal = cfgPassphrase.type === "password";
+  cfgPassphrase.type = reveal ? "text" : "password";
+  togglePassphrase.textContent = reveal ? "隐藏" : "显示";
+  togglePassphrase.setAttribute("aria-pressed", String(reveal));
+});
 
 // ---------------- 接收端 ----------------
 const startBtn = document.getElementById("start") as HTMLButtonElement;
@@ -313,6 +349,7 @@ const preview = document.getElementById("preview") as HTMLDivElement;
 const video = document.getElementById("video") as HTMLVideoElement;
 const result = document.getElementById("result") as HTMLDivElement;
 const progressStatus = document.getElementById("progress-status") as HTMLDivElement;
+const progressEl = document.getElementById("progress") as HTMLDivElement;
 const progressLabel = document.getElementById("progress-label") as HTMLElement;
 const etaLabel = document.getElementById("eta-label") as HTMLElement;
 const bar = document.getElementById("bar") as HTMLDivElement;
@@ -335,29 +372,53 @@ let captureGen = 0;
 let statsTimer: ReturnType<typeof setInterval> | undefined;
 let settingsWired = false;
 let done = false;
+let receiveSessionId = 0;
 const captureTimes: number[] = [];
 const decodeTimes: number[] = [];
 let pool: DecodeWorkerPool;
 
-function statusLineForRecv() {
-  const el = document.getElementById("stats")!;
-  let current = "";
-  return {
-    setStatus(text: string) {
-      current = text;
-      el.textContent = text;
-    },
-    showError(text: string) {
-      current = text;
-      el.textContent = text;
-      el.classList.add("error");
-    },
-    get text() {
-      return current;
-    },
-  };
+const recvStatus = statusLine(document.getElementById("stats")!);
+
+// 加密口令使用页内对话框；避免 window.prompt 在 PWA/企业浏览器中被拦截，
+// 也让错误口令可以在同一已解码分段上原地重试。
+const receivePassphraseDialog = document.getElementById("receive-passphrase-dialog") as HTMLDialogElement;
+const receivePassphraseForm = document.getElementById("receive-passphrase-form") as HTMLFormElement;
+const receivePassphraseInput = document.getElementById("receive-passphrase") as HTMLInputElement;
+const receivePassphraseCopy = document.getElementById("receive-passphrase-copy")!;
+const receivePassphraseError = document.getElementById("receive-passphrase-error")!;
+let resolvePassphrase: ((value: string | null) => void) | null = null;
+
+function settlePassphrase(value: string | null): void {
+  const resolve = resolvePassphrase;
+  resolvePassphrase = null;
+  receivePassphraseInput.value = "";
+  if (receivePassphraseDialog.open) receivePassphraseDialog.close();
+  resolve?.(value);
 }
-const recvStatus = statusLineForRecv();
+
+function requestReceivePassphrase(name: string, reason?: string): Promise<string | null> {
+  if (resolvePassphrase) settlePassphrase(null);
+  receivePassphraseCopy.textContent = `“${name}” 已加密，请输入发送端设置的口令。`;
+  receivePassphraseError.hidden = !reason;
+  receivePassphraseError.textContent = reason ?? "";
+  receivePassphraseDialog.showModal();
+  queueMicrotask(() => receivePassphraseInput.focus());
+  return new Promise((resolve) => {
+    resolvePassphrase = resolve;
+  });
+}
+
+receivePassphraseForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const value = receivePassphraseInput.value;
+  if (!value) return;
+  settlePassphrase(value);
+});
+document.getElementById("receive-passphrase-cancel")!.addEventListener("click", () => settlePassphrase(null));
+receivePassphraseDialog.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  settlePassphrase(null);
+});
 
 // 无信号提示
 const NO_SIGNAL_FIRST_MS = 5000;
@@ -392,8 +453,10 @@ async function pickDirectory(): Promise<void> {
     if (!backend) backend = createAutoBackend();
     await backend.selectAndOpen();
     dirLabel.textContent = backend.label;
+    dirLabel.classList.add("ready");
   } catch (err) {
-    dirLabel.textContent = err instanceof Error ? err.message : String(err);
+    dirLabel.textContent = errMsg(err);
+    dirLabel.classList.remove("ready");
   }
 }
 pickDirBtn.addEventListener("click", () => void pickDirectory());
@@ -422,7 +485,7 @@ function populateWorkerChoices(): void {
 populateWorkerChoices();
 
 function updateStartButton(): void {
-  startBtn.textContent = currentSource() === "screen" ? "开始屏幕捕获" : "启动摄像头";
+  startBtn.textContent = currentSource() === "screen" ? "开始屏幕接收" : "开始接收";
 }
 // 屏幕捕获提示：发送端与接收端在不同窗口/不同机器，无法跨实例自动改
 // 发送端设置，因此在接收端给出操作提示（用户到发送端窗口手动调整）。
@@ -440,20 +503,18 @@ for (const input of document.querySelectorAll<HTMLInputElement>('input[name="rec
     populateWorkerChoices();
     applyScreenRecommendations();
     if (!stream) return;
-    // 切换输入源时停止旧流，等待用户重新点击启动
-    stream.getTracks().forEach((t) => t.stop());
-    stream = null;
-    preview.style.display = "none";
-    startBtn.style.display = "";
-    startBtn.disabled = false;
-    updateStartButton();
+    // 切换输入源时一并释放旧流、解码 worker 与计时器，等待用户重新启动。
+    stopReceiveSession();
+    recvStatus.setStatus("输入源已切换，请重新开始接收。");
   });
 }
 
 function offerRetry(message: string): void {
+  stopReceiveSession();
   startBtn.disabled = false;
   startBtn.style.display = "";
-  startBtn.textContent = "启动摄像头";
+  updateStartButton();
+  pickDirBtn.disabled = false;
   preview.style.display = "none";
   metricsEl.style.display = "none";
   if (diagnosticsEl) diagnosticsEl.style.display = "none";
@@ -461,6 +522,8 @@ function offerRetry(message: string): void {
 }
 
 async function start() {
+  if (startBtn.disabled) return;
+  const sessionId = ++receiveSessionId;
   const source = currentSource();
   if (source === "screen" && !navigator.mediaDevices?.getDisplayMedia) {
     recvStatus.showError("当前浏览器不支持屏幕捕获（需要 Chrome/Edge 109+）。");
@@ -470,11 +533,18 @@ async function start() {
     recvStatus.showError("摄像头需要安全上下文：本页必须通过 https 或 file:// 使用摄像头。");
     return;
   }
+  startBtn.disabled = true;
+  startBtn.textContent = "准备接收…";
+  result.textContent = "";
+  segmentGrid.hidden = true;
+  progressStatus.style.display = "none";
+  bar.style.width = "0%";
+  progressEl.setAttribute("aria-valuenow", "0");
   if (!backend) {
     try {
       backend = createAutoBackend();
     } catch (err) {
-      offerRetry(err instanceof Error ? err.message : String(err));
+      offerRetry(errMsg(err));
       return;
     }
   }
@@ -482,33 +552,28 @@ async function start() {
   // StorageBackend 的幂等实现会直接返回，不会重复弹窗。
   try {
     await backend.selectAndOpen();
+    if (sessionId !== receiveSessionId || currentPane !== "receive") return;
     dirLabel.textContent = backend.label;
+    dirLabel.classList.add("ready");
   } catch (err) {
-    offerRetry(err instanceof Error ? err.message : String(err));
+    offerRetry(errMsg(err));
     return;
   }
   const captureWidth = Number(cfgWidth.value);
   const captureFps = Number(cfgCapFps.value);
-  startBtn.disabled = true;
   startBtn.textContent = "启动中…";
+  pickDirBtn.disabled = true;
+  let acquiredStream: MediaStream;
   try {
     if (source === "screen") {
       // 屏幕捕获（同机互传）：浏览器弹出源选择，选发送端窗口/屏幕即可。
       // 与摄像头共用同一解码管线；无对焦/摩尔纹问题，吞吐通常更高。
-      const displayStream = await navigator.mediaDevices.getDisplayMedia({
+      acquiredStream = await navigator.mediaDevices.getDisplayMedia({
         audio: false,
         // 不人为限制帧率上限：请求用户设定值（ideal），系统支持则按
         // 60fps 采集（屏幕捕获在多数桌面环境可达 60），不支持时浏览器
         // 会自动降到实际值并在状态行显示。
         video: { frameRate: { ideal: captureFps } },
-      });
-      stream = displayStream;
-      // 用户在浏览器共享指示条上点"停止"时结束接收会话
-      displayStream.getVideoTracks()[0]?.addEventListener("ended", () => {
-        if (stream === displayStream) {
-          stream = null;
-          offerRetry("屏幕共享已停止。");
-        }
       });
     } else {
       const base: MediaTrackConstraints = {
@@ -519,12 +584,12 @@ async function start() {
         height: { ideal: Math.round((captureWidth * 3) / 4) },
       };
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        acquiredStream = await navigator.mediaDevices.getUserMedia({
           audio: false,
           video: { ...base, frameRate: { exact: captureFps } },
         });
       } catch {
-        stream = await navigator.mediaDevices.getUserMedia({
+        acquiredStream = await navigator.mediaDevices.getUserMedia({
           audio: false,
           video: { ...base, frameRate: { ideal: captureFps } },
         });
@@ -539,9 +604,26 @@ async function start() {
         ? source === "screen"
           ? "屏幕捕获被取消或拒绝——请重新选择发送端窗口。"
           : "摄像头权限被拒绝——请允许后重新启动。"
-        : `${source === "screen" ? "屏幕捕获" : "摄像头"}错误：${err instanceof Error ? err.message : String(err)}`,
+        : `${source === "screen" ? "屏幕捕获" : "摄像头"}错误：${errMsg(err)}`,
     );
     return;
+  }
+
+  // 目录/媒体权限弹窗期间用户可能已经切换面板或重启会话；此时立即释放
+  // 刚拿到的媒体流，不能让旧的异步启动流程在后台复活。
+  if (sessionId !== receiveSessionId || currentPane !== "receive") {
+    acquiredStream.getTracks().forEach((track) => track.stop());
+    return;
+  }
+  stream = acquiredStream;
+  if (source === "screen") {
+    // 用户在浏览器共享指示条上点“停止”时结束接收会话。
+    acquiredStream.getVideoTracks()[0]?.addEventListener("ended", () => {
+      if (stream === acquiredStream) {
+        stream = null;
+        offerRetry("屏幕共享已停止。");
+      }
+    });
   }
 
   startBtn.style.display = "none";
@@ -568,6 +650,7 @@ async function start() {
       progressStatus.style.display = "";
       progressLabel.textContent = `0% · 分段 ${receiver?.completed ?? 0}/${m.segmentCount}`;
       etaLabel.textContent = "估算剩余时间…";
+      for (const index of receiver?.completedIndexes ?? []) updateSegmentGrid(index, m.segmentCount);
     },
     onSegmentComplete: (index, total) => {
       updateSegmentGrid(index, total);
@@ -578,17 +661,17 @@ async function start() {
     },
     onComplete: async (name, mime) => {
       done = true;
-      captureGen++;
-      stream?.getTracks().forEach((t) => t.stop());
-      clearInterval(statsTimer);
-      statsTimer = undefined;
+      stopReceiveSession(true);
       progressStatus.style.display = "";
-      progressLabel.textContent = "保存文件…";
-      bar.style.width = "99%";
+      progressLabel.textContent = "100% · 校验通过";
+      etaLabel.textContent = "可以保存文件";
+      bar.style.width = "100%";
+      progressEl.setAttribute("aria-valuenow", "100");
       preview.style.display = "none";
-      pool?.resize(0);
 
-      const save = async (): Promise<void> => {
+      const save = async (button: HTMLButtonElement): Promise<void> => {
+        button.disabled = true;
+        button.textContent = "正在保存…";
         try {
           await backend?.saveFinalFile(name, mime);
           progressStatus.style.display = "none";
@@ -604,33 +687,32 @@ async function start() {
           });
           result.append(cleanupBtn);
         } catch (error) {
+          button.disabled = false;
+          button.textContent = "重新保存";
           progressStatus.style.display = "none";
           showResult(
-            `文件已通过校验，但保存未完成：${error instanceof Error ? error.message : String(error)}`,
+            `文件已通过校验，但保存未完成：${errMsg(error)}`,
             false,
           );
-          const retryBtn = document.createElement("button");
-          retryBtn.type = "button";
-          retryBtn.className = "secondary-button";
-          retryBtn.textContent = "重新保存";
-          retryBtn.addEventListener("click", () => void save());
-          result.append(retryBtn);
+          result.append(button);
         }
       };
-      await save();
+      showResult(`${name} 已通过 SHA-256 校验。`, true);
+      const saveBtn = document.createElement("button");
+      saveBtn.type = "button";
+      saveBtn.textContent = backend?.kind === "opfs" ? "下载文件" : "保存到所选目录";
+      saveBtn.addEventListener("click", () => void save(saveBtn));
+      result.append(saveBtn);
     },
     onError: (message) => {
       recvStatus.showError(message);
     },
-    requestPassphrase: async () => {
-      const pass = window.prompt("该传输已加密，请输入口令：");
-      return pass && pass.length > 0 ? pass : null;
-    },
+    requestPassphrase: requestReceivePassphrase,
   });
   try {
     await receiver.attachBackend(backend);
   } catch (err) {
-    offerRetry(err instanceof Error ? err.message : String(err));
+    offerRetry(errMsg(err));
     return;
   }
 
@@ -654,7 +736,30 @@ async function start() {
   captureGen++;
   scheduleFrame(captureGen);
   statsTimer = setInterval(refreshProgress, 500);
+  startTsRef.current = performance.now();
   await requestScreenWakeLock();
+}
+
+/** 统一释放摄像头/屏幕捕获、worker 和计时器；keepDone 用于完成后的保存阶段。 */
+function stopReceiveSession(keepDone = false): void {
+  receiveSessionId++;
+  captureGen++;
+  if (resolvePassphrase) settlePassphrase(null);
+  noSignalDismiss();
+  clearInterval(statsTimer);
+  statsTimer = undefined;
+  stream?.getTracks().forEach((track) => track.stop());
+  stream = null;
+  pool?.resize(0);
+  preview.style.display = "none";
+  if (!keepDone) {
+    done = false;
+    receiver = null;
+    startBtn.style.display = "";
+    startBtn.disabled = false;
+    pickDirBtn.disabled = false;
+    updateStartButton();
+  }
 }
 
 // 解码 worker：由 receive/worker-factory 提供（见文件顶部注释）
@@ -703,16 +808,7 @@ async function populateCameraChoices(): Promise<void> {
 
 async function restartCamera(): Promise<void> {
   if (!stream || done) return;
-  captureGen++;
-  noSignalDismiss();
-  clearInterval(statsTimer);
-  statsTimer = undefined;
-  pool?.resize(0);
-  stream.getTracks().forEach((track) => track.stop());
-  stream = null;
-  startBtn.style.display = "";
-  startBtn.disabled = false;
-  preview.style.display = "none";
+  stopReceiveSession();
   recvStatus.setStatus("正在切换摄像头…");
   await start();
 }
@@ -814,12 +910,22 @@ function showResult(message: string, ok: boolean): void {
   result.append(p);
 }
 
+/** 丢弃早于窗口的时间戳并原地裁剪数组，返回窗口内数量。
+ *  captureTimes/decodeTimes 每帧 push，若只过滤不裁剪，长传输（数十万帧）
+ *  会让这两个数组无限增长——这里在每次刷新时就地压缩，保持 O(窗口帧数)。 */
+function trimWindow(times: number[], now: number, windowMs: number): number {
+  let keep = 0;
+  for (let i = 0; i < times.length; i++) {
+    if (now - times[i]! < windowMs) times[keep++] = times[i]!;
+  }
+  times.length = keep;
+  return keep;
+}
+
 function refreshProgress(): void {
   const now = performance.now();
-  const capWindow = captureTimes.filter((t) => now - t < 2000);
-  const decWindow = decodeTimes.filter((t) => now - t < 2000);
-  const capFps = capWindow.length / 2;
-  const decFps = decWindow.length / 2;
+  const capFps = trimWindow(captureTimes, now, 2000) / 2;
+  const decFps = trimWindow(decodeTimes, now, 2000) / 2;
   document.getElementById("m-cap")!.textContent = capFps.toFixed(1);
   document.getElementById("m-dec")!.textContent = decFps.toFixed(1);
   const r = receiver;
@@ -841,6 +947,7 @@ function refreshProgress(): void {
   if (info && info.total > 0) {
     const pct = Math.round(info.fraction * 100);
     bar.style.width = `${pct}%`;
+    progressEl.setAttribute("aria-valuenow", String(pct));
     progressLabel.textContent = `${pct}% · 分段 ${info.completed}/${info.total}`;
     progressStatus.style.display = "";
     // 估算 ETA：用全传输帧到达率近似
@@ -864,10 +971,9 @@ const startTsRef = { current: 0 };
 // 初始按钮文案跟随默认输入源（摄像头）
 updateStartButton();
 
-startBtn.addEventListener("click", () => {
-  startTsRef.current = performance.now();
-  void start();
-});
+startBtn.addEventListener("click", () => void start());
 
 // ---------------- 收尾 ----------------
+// 所有状态变量与清理函数均已初始化后再决定首屏，避免初始化阶段访问暂时性死区。
+showPane(location.hash === "#receive" ? "receive" : "send");
 if (import.meta.hot) import.meta.hot.accept();

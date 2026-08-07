@@ -25,6 +25,8 @@ export interface SegmentOptions {
   allowGzip: boolean;
   /** 加密密钥；为空表示本传输未加密。 */
   key: CryptoKey | null;
+  /** 重建发送分段时复用清单内的 nonce；首次准备时留空并随机生成。 */
+  noncePrefix?: Uint8Array | null;
 }
 
 export interface SegmentResult {
@@ -94,7 +96,7 @@ export async function prepareSegment(
   let encoded = body;
   let noncePrefix: Uint8Array | null = null;
   if (opts.key) {
-    const enc = await encryptSegment(body, opts.key, segmentIndex);
+    const enc = await encryptSegment(body, opts.key, segmentIndex, opts.noncePrefix ?? undefined);
     encoded = enc.data;
     noncePrefix = enc.noncePrefix;
   }
