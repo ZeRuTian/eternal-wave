@@ -28,9 +28,12 @@
 
 iPhone 不能从本地 HTML 直接调用摄像头，接收端需提前以 PWA 方式安装：
 
-1. 将 `dist-pwa/` 部署到任意 HTTPS 服务器（或解压 `Eternal-Wave-PWA.zip` 后托管）。
-2. 用 Safari 打开页面 → 分享按钮 → 「添加到主屏幕」。
-3. 安装完成后可完全离线使用（开启飞行模式验证）。
+1. 用 Safari 打开 [Eternal Wave 在线安装页](https://zerutian.github.io/eternal-wave/)（不要直接打开 ZIP 或 GitHub 仓库页）。
+2. 点击分享按钮 →「添加到主屏幕」；新版 iOS 若显示「作为 Web App 打开」，请保持开启。
+3. 从主屏幕首次打开时保持联网，等待页面完整加载后即可完全离线使用（可开启飞行模式验证）。
+
+在线安装页由 [GitHub Pages 工作流](.github/workflows/deploy-pages.yml) 自动构建和更新；也可将
+`dist-pwa/` 部署到其他 HTTPS 静态服务器。
 
 ## 传输设置
 
