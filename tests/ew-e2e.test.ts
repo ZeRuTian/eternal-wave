@@ -31,6 +31,7 @@ async function runLink(
     mime?: string;
     passphrase?: string;
     frameBytes?: number;
+    coverage?: number;
     dropRate?: number;
     dupRate?: number;
     shuffle?: boolean;
@@ -45,6 +46,7 @@ async function runLink(
     bytes,
     frameBytes: opts.frameBytes ?? 2331,
     passphrase: opts.passphrase,
+    coverage: opts.coverage,
   });
 
   const backend = new MemoryBackend();
@@ -78,8 +80,9 @@ async function runLink(
       framesUsed++;
       if (rnd() < dupRate) receiver.handleFrame(f.slice()); // 重复帧
       // 周期让出事件循环：handleParsed 是异步链，同步狂喂会让发送端
-      // 分配无法回收（单帧 2.3KB × 200 万 ≈ 4.7GB）→ SIGABRT。
-      if ((i & 0x3ff) === 0) await new Promise((r) => setTimeout(r, 0));
+      // 分配无法回收（单帧 2.3KB × 200 万 ≈ 4.7GB）→ SIGABRT；也让
+      // 接收端的完成链能及时推进（贴近真实 30fps 输入节奏）。
+      if ((i & 0x3f) === 0) await new Promise((r) => setTimeout(r, 0));
       if (receiver.isDone) break;
     }
   }
@@ -253,6 +256,52 @@ test("低帧率/小帧字节配置（500B/帧）也正确", async () => {
   for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 7) % 251;
   const { backend, receiver } = await runLink(bytes, { frameBytes: 500, seed: 9 });
   assert.ok(receiver.isDone);
+  assert.deepEqual(backend.parts.get(0), bytes);
+});
+
+test("高速模式（冗余 1.2）：干净信道多段传输帧数显著少于稳健模式", async () => {
+  // 多段（8 MiB = 2 段）+ 随机数据（不可压缩）：coverage 差异在每段
+  // 的冗余浪费上体现——高速 1.2 一轮收满后浪费少，稳健 1.35 每段多发
+  // ~0.2k 帧。单段/可压缩场景 k 太小或收满即止，无法体现差异。
+  const bytes = new Uint8Array(8 * 1024 * 1024);
+  // getRandomValues 单次上限 65536 字节，分块填充
+  for (let off = 0; off < bytes.length; off += 65536) {
+    crypto.getRandomValues(bytes.subarray(off, Math.min(off + 65536, bytes.length)));
+  }
+  // 干净信道：0 丢帧 0 重复（屏幕捕获近似场景）
+  const { receiver, framesUsed: fastFrames } = await runLink(bytes, {
+    coverage: 1.2,
+    dropRate: 0,
+    dupRate: 0,
+    seed: 11,
+  });
+  assert.ok(receiver.isDone, "高速模式在干净信道应收满");
+  const { receiver: robust, framesUsed: robustFrames } = await runLink(bytes, {
+    coverage: 1.35,
+    dropRate: 0,
+    dupRate: 0,
+    seed: 11,
+  });
+  assert.ok(robust.isDone);
+  // 高速应显著少于稳健：同一数据、同一 seed，差异 = 每段冗余浪费差
+  assert.ok(fastFrames < robustFrames, `高速 ${fastFrames} 帧 < 稳健 ${robustFrames} 帧`);
+  const ratio = fastFrames / robustFrames;
+  assert.ok(
+    ratio < 0.92,
+    `高速帧数应比稳健少 8% 以上（实际比例 ${ratio.toFixed(3)}：${fastFrames}/${robustFrames}）`,
+  );
+});
+
+test("高速模式（冗余 1.2）：5% 轻丢帧仍可完成（覆盖常见屏幕捕获抖动）", async () => {
+  const bytes = new Uint8Array(200_000);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 3) % 251;
+  const { backend, receiver } = await runLink(bytes, {
+    coverage: 1.2,
+    dropRate: 0.05,
+    dupRate: 0,
+    seed: 13,
+  });
+  assert.ok(receiver.isDone, "高速模式在 5% 丢帧下应收满（多轮循环补帧）");
   assert.deepEqual(backend.parts.get(0), bytes);
 });
 

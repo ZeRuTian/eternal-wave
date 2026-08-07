@@ -66,6 +66,13 @@
             </select>
           </label>
           <label>
+            传输模式
+            <select id="cfg-mode">
+              <option value="fast" selected>高速（冗余 1.2）</option>
+              <option value="robust">稳健（冗余 1.35）</option>
+            </select>
+          </label>
+          <label>
             显示大小
             <input id="cfg-size" type="range" min="300" max="1200" step="50" value="900" />
           </label>
@@ -76,6 +83,7 @@
           <div><dt>二维码</dt><dd id="spec-qr">—</dd></div>
           <div><dt>正在发送</dt><dd id="spec-payload">—</dd></div>
           <div><dt>压缩</dt><dd id="spec-compression">—</dd></div>
+          <div><dt>传输模式</dt><dd id="spec-mode">—</dd></div>
           <div><dt>喷泉块数</dt><dd id="spec-k">—</dd></div>
           <div><dt>分段</dt><dd id="spec-segments">—</dd></div>
         </dl>

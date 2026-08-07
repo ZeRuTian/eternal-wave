@@ -148,12 +148,14 @@ async function prepareSelectedFile(revealStage = false): Promise<void> {
   setStatus(`正在准备 ${current.file.name}…`);
   try {
     const passphrase = cfgPassphrase.value.trim();
+    const mode = (document.getElementById("cfg-mode") as HTMLSelectElement).value;
     const prepared = await prepareTransfer({
       name: current.file.name,
       mime: current.file.type,
       bytes: current.bytes,
       frameBytes: Number((document.getElementById("cfg-bytes") as HTMLSelectElement).value),
       passphrase: passphrase || undefined,
+      coverage: mode === "fast" ? 1.2 : 1.35,
     });
     if (gen !== generation || selectedFile !== current) return;
     current.prepared = prepared;
@@ -248,6 +250,7 @@ async function startStream(revealStage = false): Promise<void> {
       spec("spec-qr").textContent = `V${qr.version} · ECC ${ecc}`;
       spec("spec-payload").textContent = `${name} · ${formatBytes(fileSize)}`;
       spec("spec-compression").textContent = prepared.manifest.allowGzip ? "按段自动（仅缩小时）" : "—";
+      spec("spec-mode").textContent = prepared.coverage < 1.3 ? "高速（冗余 1.2）" : "稳健（冗余 1.35）";
       spec("spec-k").textContent = `段内 K = ${Math.ceil(prepared.segments[0]!.length / blockLen)}`;
       spec("spec-segments").textContent = `${prepared.manifest.segmentCount} 段 · 每段 4 MiB`;
       showStreamPanels(true);
@@ -295,6 +298,9 @@ for (const el of ["cfg-fps", "cfg-ecc", "cfg-size"]) {
   document.getElementById(el)!.addEventListener("change", () => void startStream());
 }
 document.getElementById("cfg-bytes")!.addEventListener("change", () => void prepareSelectedFile());
+document.getElementById("cfg-mode")!.addEventListener("change", () => {
+  if (selectedFile) void prepareSelectedFile();
+});
 cfgPassphrase.addEventListener("change", () => {
   if (selectedFile) void prepareSelectedFile();
 });

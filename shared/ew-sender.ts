@@ -40,6 +40,13 @@ export interface SenderOptions {
   passphrase?: string;
   /** 是否允许逐段 gzip。 */
   allowGzip?: boolean;
+  /**
+   * 喷泉冗余系数：每段发送 ceil(coverage × k) 个不同帧后切下一段。
+   * 1.35 = 稳健（默认，抗 30% 丢帧）；1.2 = 高速（信道干净时吞吐约 +10%，
+   * 必须高于 LT 解码开销 ~1.16 才能一轮收满；1.1 会导致等第二轮反而更慢）。
+   * 纯发送端调度参数，接收端无需感知，新旧版本完全兼容。
+   */
+  coverage?: number;
 }
 
 export interface PreparedTransfer {
@@ -51,6 +58,8 @@ export interface PreparedTransfer {
   manifestFrames: Uint8Array[];
   transferId: Uint8Array;
   blockLen: number;
+  /** 本传输使用的喷泉冗余系数（决定调度节奏，不影响协议）。 */
+  coverage: number;
 }
 
 /** 从传输 ID 派生喷泉码种子（128 位 → 32 位，发送/接收两端一致）。 */
@@ -139,7 +148,10 @@ export async function prepareTransfer(opts: SenderOptions): Promise<PreparedTran
   }));
   const manifestFrames = manifestHeaders.map((h, i) => packFrame(h, chunks[i]!));
 
-  return { manifest, segments, manifestHeaders, manifestFrames, transferId, blockLen };
+  const coverage = opts.coverage ?? SEGMENT_COVERAGE;
+  if (!(coverage >= 1.0 && coverage <= 2.0)) throw new Error(`喷泉冗余系数 ${coverage} 不合法（应在 1.0–2.0）`);
+
+  return { manifest, segments, manifestHeaders, manifestFrames, transferId, blockLen, coverage };
 }
 
 /**
@@ -154,7 +166,7 @@ export function* frameStream(p: PreparedTransfer): Generator<Uint8Array> {
 
   const framesPerSegment = p.segments.map((seg) => {
     const k = Math.max(1, Math.ceil(seg.length / p.blockLen));
-    return { k, frames: Math.ceil(SEGMENT_COVERAGE * k), encoder: new LTEncoder(seg, p.blockLen, sessionSeed(p.transferId)) };
+    return { k, frames: Math.ceil(p.coverage * k), encoder: new LTEncoder(seg, p.blockLen, sessionSeed(p.transferId)) };
   });
 
   let seq = 0;
