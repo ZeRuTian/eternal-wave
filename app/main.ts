@@ -372,8 +372,9 @@ document.getElementById("no-signal-close")!.addEventListener("click", () => noSi
 noSignalDialog.addEventListener("close", noSignalDismiss);
 for (const line of [
   "在发送端把「每帧字节数」降到 1465，帧率降到 24。",
-  "让二维码充满摄像头画面，手机尽量固定——手抖导致对焦反复是常见原因。",
+  "让二维码充满画面（点击二维码可全屏），手机尽量固定——手抖导致对焦反复是常见原因。",
   "把发送端屏幕亮度调到最高。",
+  "同机互传请选择「屏幕捕获」，在弹出的窗口列表里选中发送端窗口。",
 ]) {
   const item = document.createElement("li");
   item.textContent = line;
@@ -391,6 +392,28 @@ async function pickDirectory(): Promise<void> {
 }
 pickDirBtn.addEventListener("click", () => void pickDirectory());
 
+// 输入源：摄像头 / 屏幕捕获（同机互传）
+function currentSource(): "camera" | "screen" {
+  const checked = document.querySelector<HTMLInputElement>('input[name="recv-source"]:checked');
+  return checked?.value === "screen" ? "screen" : "camera";
+}
+function updateStartButton(): void {
+  startBtn.textContent = currentSource() === "screen" ? "开始屏幕捕获" : "启动摄像头";
+}
+for (const input of document.querySelectorAll<HTMLInputElement>('input[name="recv-source"]')) {
+  input.addEventListener("change", () => {
+    updateStartButton();
+    if (!stream) return;
+    // 切换输入源时停止旧流，等待用户重新点击启动
+    stream.getTracks().forEach((t) => t.stop());
+    stream = null;
+    preview.style.display = "none";
+    startBtn.style.display = "";
+    startBtn.disabled = false;
+    updateStartButton();
+  });
+}
+
 function offerRetry(message: string): void {
   startBtn.disabled = false;
   startBtn.style.display = "";
@@ -402,7 +425,12 @@ function offerRetry(message: string): void {
 }
 
 async function start() {
-  if (!navigator.mediaDevices?.getUserMedia) {
+  const source = currentSource();
+  if (source === "screen" && !navigator.mediaDevices?.getDisplayMedia) {
+    recvStatus.showError("当前浏览器不支持屏幕捕获（需要 Chrome/Edge 109+）。");
+    return;
+  }
+  if (source === "camera" && !navigator.mediaDevices?.getUserMedia) {
     recvStatus.showError("摄像头需要安全上下文：本页必须通过 https 或 file:// 使用摄像头。");
     return;
   }
@@ -427,31 +455,52 @@ async function start() {
   const captureFps = Number(cfgCapFps.value);
   startBtn.disabled = true;
   startBtn.textContent = "启动中…";
-  const base: MediaTrackConstraints = {
-    ...(cfgCamera.value
-      ? { deviceId: { exact: cfgCamera.value } }
-      : { facingMode: "environment" as const }),
-    width: { ideal: captureWidth },
-    height: { ideal: Math.round((captureWidth * 3) / 4) },
-  };
   try {
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
+    if (source === "screen") {
+      // 屏幕捕获（同机互传）：浏览器弹出源选择，选发送端窗口/屏幕即可。
+      // 与摄像头共用同一解码管线；无对焦/摩尔纹问题，吞吐通常更高。
+      const displayStream = await navigator.mediaDevices.getDisplayMedia({
         audio: false,
-        video: { ...base, frameRate: { exact: captureFps } },
+        video: { frameRate: { ideal: Math.min(captureFps, 30) } },
       });
-    } catch {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: { ...base, frameRate: { ideal: captureFps } },
+      stream = displayStream;
+      // 用户在浏览器共享指示条上点"停止"时结束接收会话
+      displayStream.getVideoTracks()[0]?.addEventListener("ended", () => {
+        if (stream === displayStream) {
+          stream = null;
+          offerRetry("屏幕共享已停止。");
+        }
       });
+    } else {
+      const base: MediaTrackConstraints = {
+        ...(cfgCamera.value
+          ? { deviceId: { exact: cfgCamera.value } }
+          : { facingMode: "environment" as const }),
+        width: { ideal: captureWidth },
+        height: { ideal: Math.round((captureWidth * 3) / 4) },
+      };
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { ...base, frameRate: { exact: captureFps } },
+        });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { ...base, frameRate: { ideal: captureFps } },
+        });
+      }
     }
   } catch (err) {
-    const denied = err instanceof DOMException && err.name === "NotAllowedError";
+    const denied =
+      err instanceof DOMException &&
+      (err.name === "NotAllowedError" || err.name === "AbortError" || err.name === "PermissionDeniedError");
     offerRetry(
       denied
-        ? "摄像头权限被拒绝——请允许后重新启动。"
-        : `摄像头错误：${err instanceof Error ? err.message : String(err)}`,
+        ? source === "screen"
+          ? "屏幕捕获被取消或拒绝——请重新选择发送端窗口。"
+          : "摄像头权限被拒绝——请允许后重新启动。"
+        : `${source === "screen" ? "屏幕捕获" : "摄像头"}错误：${err instanceof Error ? err.message : String(err)}`,
     );
     return;
   }
@@ -462,10 +511,12 @@ async function start() {
   if (diagnosticsEl) diagnosticsEl.style.display = "block";
   video.srcObject = stream;
   await video.play().catch(() => undefined);
-  await populateCameraChoices();
+  if (source === "camera") await populateCameraChoices();
   const settings = stream.getVideoTracks()[0]?.getSettings();
   recvStatus.setStatus(
-    `摄像头 ${settings?.width}×${settings?.height}@${settings?.frameRate} — 正在寻找信号…`,
+    source === "screen"
+      ? `屏幕捕获 ${settings?.width}×${settings?.height}@${settings?.frameRate} — 正在寻找信号…`
+      : `摄像头 ${settings?.width}×${settings?.height}@${settings?.frameRate} — 正在寻找信号…`,
   );
 
   // 接收核心：优先使用已选目录的后端，否则自动创建
@@ -552,7 +603,11 @@ async function start() {
     for (const el of [cfgWidth, cfgCapFps, cfgWorkers]) {
       el.addEventListener("change", () => void applyReceiveSettings());
     }
-    cfgCamera.addEventListener("change", () => void restartCamera());
+    // 摄像头选择仅在摄像头模式下有意义
+    cfgCamera.addEventListener("change", () => {
+      if (currentSource() === "screen") return;
+      void restartCamera();
+    });
   }
   noSignalStart();
   captureGen++;
@@ -578,8 +633,9 @@ function reportCameraSettings(): void {
   const askedFps = Number(cfgCapFps.value);
   const gotFps = Math.round(s.frameRate ?? 0);
   const fpsNote = gotFps && gotFps !== askedFps ? `（请求 ${askedFps}，实际 ${gotFps}）` : "";
+  const label = currentSource() === "screen" ? "屏幕捕获" : "摄像头";
   cameraActual.textContent =
-    `摄像头 ${s.width}×${s.height} @ ${gotFps} fps${fpsNote} · ${pool?.size ?? 0} 个解码线程 · 修改即时生效`;
+    `${label} ${s.width}×${s.height} @ ${gotFps} fps${fpsNote} · ${pool?.size ?? 0} 个解码线程 · 修改即时生效`;
 }
 
 async function populateCameraChoices(): Promise<void> {
@@ -621,6 +677,8 @@ async function restartCamera(): Promise<void> {
 }
 
 async function applyCameraExtras(): Promise<void> {
+  // 屏幕捕获源没有对焦/闪光灯概念，getCapabilities 可能返回空——跳过
+  if (currentSource() !== "camera") return;
   const track = stream?.getVideoTracks()[0];
   if (!track) return;
   const caps = probeCameraCapabilities(track);
@@ -639,6 +697,11 @@ async function applyReceiveSettings(): Promise<void> {
   pool?.resize(Number(cfgWorkers.value));
   const track = stream?.getVideoTracks()[0];
   if (!track) return;
+  // 屏幕捕获的分辨率/帧率由系统共享配置决定，不做实时调整
+  if (currentSource() === "screen") {
+    reportCameraSettings();
+    return;
+  }
   const width = Number(cfgWidth.value);
   try {
     await track.applyConstraints({
@@ -756,6 +819,9 @@ function refreshProgress(): void {
 }
 
 const startTsRef = { current: 0 };
+
+// 初始按钮文案跟随默认输入源（摄像头）
+updateStartButton();
 
 startBtn.addEventListener("click", () => {
   startTsRef.current = performance.now();

@@ -98,6 +98,16 @@
         </div>
 
         <div class="ew-recv-actions">
+          <div class="ew-source-picker" role="radiogroup" aria-label="输入源">
+            <label>
+              <input type="radio" name="recv-source" value="camera" checked />
+              <span>摄像头</span>
+            </label>
+            <label>
+              <input type="radio" name="recv-source" value="screen" />
+              <span>屏幕捕获（同机互传）</span>
+            </label>
+          </div>
           <button id="start">启动摄像头</button>
           <button id="pick-dir" class="secondary-button" type="button">选择保存目录</button>
           <span id="dir-label" class="hint">未选择目录</span>
@@ -146,7 +156,7 @@
           <div class="row">
             <label>
               摄像头
-              <select id="cfg-camera"><option value="">自动选择</option></select>
+              <select id="cfg-camera"><option value="">自动</option></select>
             </label>
             <label>
               分辨率
