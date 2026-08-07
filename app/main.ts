@@ -397,12 +397,52 @@ function currentSource(): "camera" | "screen" {
   const checked = document.querySelector<HTMLInputElement>('input[name="recv-source"]:checked');
   return checked?.value === "screen" ? "screen" : "camera";
 }
+
+// 解码线程：按硬件核数生成选项（min(核数-1, 5)，至少 1），默认取推荐值；
+// 屏幕捕获场景帧率更高，默认多给 1 个线程。
+const HARDWARE_CONCURRENCY = navigator.hardwareConcurrency || 4;
+const MAX_WORKERS = Math.max(1, Math.min(HARDWARE_CONCURRENCY - 1, 5));
+function populateWorkerChoices(): void {
+  cfgWorkers.textContent = "";
+  const recommend = currentSource() === "screen" ? Math.min(MAX_WORKERS + 1, 5) : MAX_WORKERS;
+  for (let i = 1; i <= Math.max(MAX_WORKERS, recommend); i++) {
+    const opt = document.createElement("option");
+    opt.value = String(i);
+    opt.textContent = `${i}${i === recommend ? "（推荐）" : ""}`;
+    if (i === recommend) opt.selected = true;
+    cfgWorkers.append(opt);
+  }
+}
+populateWorkerChoices();
+
 function updateStartButton(): void {
   startBtn.textContent = currentSource() === "screen" ? "开始屏幕捕获" : "启动摄像头";
 }
+// 屏幕捕获自动高配：切到屏幕捕获时，若发送端尚未开始传输，把帧率/每帧字节
+// 调到屏幕捕获的推荐值（60fps + 2953B，画面干净无摩尔纹，高密度码可读）。
+const SCREEN_RECOMMEND_FPS = "60";
+const SCREEN_RECOMMEND_BYTES = "2953";
+let userTunedSendSettings = false;
+function applyScreenRecommendations(): void {
+  if (currentSource() !== "screen" || userTunedSendSettings || selectedFile) return;
+  const fps = document.getElementById("cfg-fps") as HTMLSelectElement;
+  const bytes = document.getElementById("cfg-bytes") as HTMLSelectElement;
+  if ([...fps.options].some((o) => o.value === SCREEN_RECOMMEND_FPS)) fps.value = SCREEN_RECOMMEND_FPS;
+  if ([...bytes.options].some((o) => o.value === SCREEN_RECOMMEND_BYTES)) bytes.value = SCREEN_RECOMMEND_BYTES;
+  recvStatus.setStatus("已为屏幕捕获推荐 60fps + 2953B/帧；手动调整发送设置后不再自动覆盖。");
+}
+// 用户手动改发送设置后，记录为"已调优"，停止自动覆盖
+for (const id of ["cfg-fps", "cfg-bytes", "cfg-ecc", "cfg-size"]) {
+  document.getElementById(id)!.addEventListener("change", () => {
+    userTunedSendSettings = true;
+  });
+}
+
 for (const input of document.querySelectorAll<HTMLInputElement>('input[name="recv-source"]')) {
   input.addEventListener("change", () => {
     updateStartButton();
+    populateWorkerChoices();
+    applyScreenRecommendations();
     if (!stream) return;
     // 切换输入源时停止旧流，等待用户重新点击启动
     stream.getTracks().forEach((t) => t.stop());
