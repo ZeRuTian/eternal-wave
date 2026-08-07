@@ -553,7 +553,9 @@ async function start() {
         try {
           await backend?.saveFinalFile(name, mime);
           progressStatus.style.display = "none";
-          showResult(`传输完成！${name} 已通过校验并触发保存。`, true);
+          const where =
+            backend?.kind === "opfs" ? "已触发下载" : "已保存到所选目录";
+          showResult(`传输完成！${name} 已通过校验，${where}。`, true);
           const cleanupBtn = document.createElement("button");
           cleanupBtn.type = "button";
           cleanupBtn.className = "secondary-button";

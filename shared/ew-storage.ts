@@ -237,15 +237,27 @@ export function createDesktopBackend(): StorageBackend {
     },
 
     async saveFinalFile(name, mime) {
-      if (!partHandle) throw new Error("尚未初始化传输");
-      const file = await partHandle.getFile();
-      const blob = file.slice(0, fileLen, mime || "application/octet-stream");
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = name;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      if (!dirHandle || !partHandle) throw new Error("尚未初始化传输");
+      // 直接写入用户所选目录（而不是 a[download] 到浏览器默认下载目录）。
+      // 从 .ewpart 流式复制前 fileLen 字节，避免大文件全载入内存。
+      const partFile = await partHandle.getFile();
+      const outHandle = await dirHandle.getFileHandle(name, { create: true });
+      const w = await outHandle.createWritable();
+      const reader = partFile.stream().getReader();
+      let remaining = fileLen;
+      try {
+        for (;;) {
+          if (remaining <= 0) break;
+          const { done, value } = await reader.read();
+          if (done) break;
+          const take = Math.min(remaining, value.byteLength);
+          await w.write(toChunk(new Uint8Array(value.buffer, value.byteOffset, take)));
+          remaining -= take;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      await w.close();
     },
 
     async cleanupTemp() {
