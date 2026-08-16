@@ -25,7 +25,7 @@ import {
   type PreparedTransfer,
 } from "../shared/ew-sender";
 import { MAX_FILE_BYTES, MAX_FILE_LABEL } from "../shared/ew-protocol";
-import { createAutoBackend, type StorageBackend } from "../shared/ew-storage";
+import { autoSaveAndCleanup, createAutoBackend, type StorageBackend } from "../shared/ew-storage";
 
 const MARGIN = 4;
 const LOOKAHEAD = 3;
@@ -669,46 +669,38 @@ async function start() {
       done = true;
       stopReceiveSession(true);
       progressStatus.style.display = "";
-      progressLabel.textContent = "100% · 校验通过";
-      etaLabel.textContent = "可以保存文件";
+      progressLabel.textContent = "100% · 正在自动保存";
+      etaLabel.textContent = "保存后将自动清理临时文件…";
       bar.style.width = "100%";
       progressEl.setAttribute("aria-valuenow", "100");
       preview.style.display = "none";
+      if (!backend) {
+        progressStatus.style.display = "none";
+        showResult(`${name} 已通过校验，但存储后端不可用，临时文件未清理。`, false);
+        return;
+      }
 
-      const save = async (button: HTMLButtonElement): Promise<void> => {
-        button.disabled = true;
-        button.textContent = "正在保存…";
-        try {
-          await backend?.saveFinalFile(name, mime);
-          progressStatus.style.display = "none";
-          const where =
-            backend?.kind === "opfs" ? "已触发下载" : "已保存到所选目录";
-          showResult(`传输完成！${name} 已通过校验，${where}。`, true);
-          const cleanupBtn = document.createElement("button");
-          cleanupBtn.type = "button";
-          cleanupBtn.className = "secondary-button";
-          cleanupBtn.textContent = "清理临时文件";
-          cleanupBtn.addEventListener("click", () => {
-            void backend?.cleanupTemp().then(() => showResult("临时文件已清理。", true));
-          });
-          result.append(cleanupBtn);
-        } catch (error) {
-          button.disabled = false;
-          button.textContent = "重新保存";
-          progressStatus.style.display = "none";
-          showResult(
-            `文件已通过校验，但保存未完成：${errMsg(error)}`,
-            false,
-          );
-          result.append(button);
-        }
-      };
-      showResult(`${name} 已通过 SHA-256 校验。`, true);
-      const saveBtn = document.createElement("button");
-      saveBtn.type = "button";
-      saveBtn.textContent = backend?.kind === "opfs" ? "下载文件" : "保存到所选目录";
-      saveBtn.addEventListener("click", () => void save(saveBtn));
-      result.append(saveBtn);
+      const activeBackend = backend;
+      const outcome = await autoSaveAndCleanup(activeBackend, name, mime);
+      progressStatus.style.display = "none";
+      if (outcome.ok) {
+        const where = activeBackend.kind === "opfs" ? "已自动触发下载" : "已自动保存到所选目录";
+        showResult(`传输完成！${name} 已通过校验，${where}，临时文件已自动清理。`, true);
+        // 收尾完成后直接恢复为可开始下一次接收的状态，不再等待保存/清理按钮。
+        stopReceiveSession();
+        return;
+      }
+      if (outcome.stage === "save") {
+        showResult(
+          `${name} 已通过校验，但自动保存失败：${errMsg(outcome.error)}。临时文件已保留，避免数据丢失。`,
+          false,
+        );
+      } else {
+        showResult(
+          `${name} 已保存，但临时文件自动清理失败：${errMsg(outcome.error)}。`,
+          false,
+        );
+      }
     },
     onError: (message) => {
       recvStatus.showError(message);

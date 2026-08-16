@@ -51,7 +51,7 @@ export interface StorageBackend {
   /** 流式计算 .ewpart 全部字节的 SHA-256（增量，不整载入内存）。 */
   streamSha256(): Promise<Uint8Array>;
 
-  /** 保存最终文件（桌面：另存为；PWA：触发下载）。 */
+  /** 保存最终文件（桌面：写入已选目录；PWA：触发自动下载）。 */
   saveFinalFile(name: string, mime: string): Promise<void>;
 
   /** 删除 .ewpart/.ewckpt（保存成功后清理临时文件）。 */
@@ -59,6 +59,34 @@ export interface StorageBackend {
 
   /** 释放资源（关闭句柄等）。 */
   dispose(): Promise<void>;
+}
+
+export type AutoFinalizeResult =
+  | { ok: true }
+  | { ok: false; stage: "save" | "cleanup"; error: unknown };
+
+/**
+ * 校验完成后的统一收尾：先保存最终文件，成功后才删除临时文件。
+ *
+ * 顺序不能颠倒；尤其在 iOS/OPFS 中，自动下载若在创建 Blob 前失败，必须
+ * 保留 .ewpart 与检查点，避免已接收并通过 SHA-256 的文件不可恢复。
+ */
+export async function autoSaveAndCleanup(
+  backend: StorageBackend,
+  name: string,
+  mime: string,
+): Promise<AutoFinalizeResult> {
+  try {
+    await backend.saveFinalFile(name, mime);
+  } catch (error) {
+    return { ok: false, stage: "save", error };
+  }
+  try {
+    await backend.cleanupTemp();
+  } catch (error) {
+    return { ok: false, stage: "cleanup", error };
+  }
+  return { ok: true };
 }
 
 // ---- 工具：浏览器能力探测 ----
@@ -438,8 +466,22 @@ export function createOpfsBackend(): StorageBackend {
       const a = document.createElement("a");
       a.href = url;
       a.download = name;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      a.hidden = true;
+      document.body.append(a);
+      try {
+        // 挂入 DOM 后触发，兼容对游离 <a download> 支持不完整的 iOS Safari。
+        a.click();
+      } catch (error) {
+        a.remove();
+        URL.revokeObjectURL(url);
+        throw error;
+      }
+      // 保留链接与 Blob URL 一段时间，让 iOS 下载管理器有时间接管读取；
+      // OPFS 临时文件随后删除不影响这个不可变 Blob 快照。
+      setTimeout(() => {
+        a.remove();
+        URL.revokeObjectURL(url);
+      }, 60_000);
     },
 
     async cleanupTemp() {
