@@ -190,6 +190,27 @@ test("从旧检查点恢复后遇到新传输：清除旧完成位图并正常�
   assert.equal(backend.parts.has(0), true);
 });
 
+test("完整检查点重新打开后收到同一清单会直接校验并再次进入导出", async () => {
+  const tid = new Uint8Array(16).fill(0x5a);
+  const bytes = new Uint8Array(1000).fill(7);
+  const checkpoint = newCheckpoint(tid, 1, bytes.length);
+  markSegmentComplete(checkpoint, 0);
+  const backend = new MemoryBackend();
+  backend.checkpoint = checkpoint;
+  backend.parts.set(0, bytes);
+  let completed = 0;
+  const recv = new EwReceiver({ onComplete: () => { completed++; } });
+
+  await recv.attachBackend(backend);
+  recv.handleFrame(manifestFrame(makeManifest(), tid));
+  for (let i = 0; i < 20 && !recv.isDone; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  assert.equal(recv.isDone, true);
+  assert.equal(completed, 1);
+});
+
 test("接收端统计唯一帧与重复帧", async () => {
   const tid = new Uint8Array(16).fill(0xcc);
   const recv = new EwReceiver();

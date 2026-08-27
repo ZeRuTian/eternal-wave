@@ -17,6 +17,12 @@ Safari has never shipped `BarcodeDetector` (WebKit bug 281848), so decoding is [
 
 **iOS Safari will not reliably play `blob:` URLs in `<video>`/`<audio>`** — AVFoundation wants real HTTP semantics, Range requests included. Received media goes into the Cache API and is served through a workbox `rangeRequests` route at a real URL (`received-media`); the blob URL is the fallback when no service worker controls the page, plus an `error`-event fallback in case AVFoundation bypasses the SW entirely.
 
+## Received-file export
+
+- **iOS cannot reliably start a Blob download from an asynchronous completion callback.** The OPFS file is first prepared as a `File`; a visible button then calls `navigator.share({ files })` synchronously inside the tap. Cleanup runs only after the share promise resolves. Cancellation and errors retain `.ewpart` and the checkpoint.
+- **A fully complete checkpoint is exportable after reopening.** Receiving the matching manifest immediately re-runs SHA-256 and re-enters the export flow instead of waiting for another data segment.
+- **Android/Huawei storage is capability-detected.** `showDirectoryPicker` wins when present; otherwise `navigator.storage.getDirectory` selects OPFS even if the browser does not report standalone/PWA display mode.
+
 ## Safari 26 "Liquid Glass" chrome tinting
 
 Safari 26 ignores `theme-color` and tints its chrome / safe-area bands by **sampling page CSS — fixed-position layers especially — and latches the sample**. Two consequences baked in:

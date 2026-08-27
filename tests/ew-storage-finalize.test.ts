@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { StorageBackend } from "../shared/ew-storage.ts";
-import { autoSaveAndCleanup } from "../shared/ew-storage.ts";
+import {
+  autoSaveAndCleanup,
+  preferredStorageBackend,
+  saveThenCleanup,
+} from "../shared/ew-storage.ts";
 
 function backendWith(
   save: () => Promise<void>,
@@ -17,6 +21,7 @@ function backendWith(
     async writeSegment() {},
     async readSegment() { return null; },
     async streamSha256() { return new Uint8Array(); },
+    async prepareFinalFile(name, mime) { return new File([], name, { type: mime }); },
     saveFinalFile: save,
     cleanupTemp: cleanup,
     async dispose() {},
@@ -68,4 +73,23 @@ test("文件已保存但清理失败时准确返回清理阶段", async () => {
     assert.equal(result.stage, "cleanup");
     assert.equal(result.error, failure);
   }
+});
+
+test("用户点击收尾会同步调用系统保存动作，再异步清理", async () => {
+  const calls: string[] = [];
+  const backend = backendWith(
+    async () => undefined,
+    async () => { calls.push("cleanup"); },
+  );
+
+  const pending = saveThenCleanup(backend, async () => { calls.push("share"); });
+  assert.deepEqual(calls, ["share"], "系统分享必须在点击的瞬时用户激活中同步发起");
+  assert.deepEqual(await pending, { ok: true });
+  assert.deepEqual(calls, ["share", "cleanup"]);
+});
+
+test("存储后端按能力选择，不依赖是否以 PWA 模式运行", () => {
+  assert.equal(preferredStorageBackend(true, true), "desktop-dir", "桌面目录写入能力优先");
+  assert.equal(preferredStorageBackend(false, true), "opfs", "手机浏览器未报告 standalone 仍使用 OPFS");
+  assert.equal(preferredStorageBackend(false, false), null);
 });

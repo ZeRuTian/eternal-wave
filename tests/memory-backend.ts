@@ -43,6 +43,13 @@ export class MemoryBackend implements StorageBackend {
     }
     return sha256Once(buf);
   }
+  async prepareFinalFile(name: string, mime: string) {
+    const segs = [...this.parts.entries()].sort((a, b) => a[0] - b[0]);
+    return new File(segs.map(([, bytes]) => bytes), name, {
+      type: mime || "application/octet-stream",
+      lastModified: Date.now(),
+    });
+  }
   async saveFinalFile() {}
   async cleanupTemp() {}
   async dispose() {}

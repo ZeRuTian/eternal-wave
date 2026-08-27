@@ -142,20 +142,21 @@ interface StorageBackend {
   writeSegment(index: number, bytes: Uint8Array): Promise<void>;   // 写 .ewpart 偏移 index*SEGMENT_SIZE
   readSegment(index: number): Promise<Uint8Array | null>;          // 续传时读回已写段（用于调试/校验）
   streamSha256(): Promise<Uint8Array>;       // 流式 .ewpart 全文件 SHA-256
+  prepareFinalFile(name: string, type: string): Promise<File>;     // iOS 分享前准备快照
   saveFinalFile(name: string, type: string): Promise<void>;        // 保存/下载最终文件
   cleanupTemp(): Promise<void>;              // 删除 .ewpart/.ewckpt
   dispose(): Promise<void>;
 }
 ```
 
-- desktop-dir：File System Access API（showDirectoryPicker）。iOS PWA：OPFSBackend（无目录选择，固定根目录）。
+- desktop-dir：File System Access API（showDirectoryPicker）。iOS 与无目录选择能力的安卓/华为浏览器：OPFSBackend（固定私有根目录）；选择依据是能力探测，不依赖 PWA 显示模式。
 - `ensureTransfer` 在收到清单后调用：先 `freeSpaceSufficient(fileLen)`，不足则拒绝开始。
 
 ## 2. 单页应用（app/）
 
 - `app/index.html`：单页。顶部两个入口按钮：「发送文件」「接收文件」，切换主面板。中文界面。
 - 发送面板：文件选择、文件信息（名称/大小/类型）、FPS 与帧字节配置、预计耗时、二维码画布（全屏按钮）、状态行、停止按钮、加密口令输入（可选）。
-- 接收面板：摄像头授权、设备选择（内置/USB）、自动对焦/分辨率设置、进度（总进度 + 分段状态网格 + 已收帧/总帧 + 速度 + 剩余时间）、目录选择（桌面）/PWA 自动、保存按钮、清理临时文件按钮、中文故障提示。
+- 接收面板：摄像头授权、设备选择（内置/USB）、自动对焦/分辨率设置、进度（总进度 + 分段状态网格 + 已收帧/总帧 + 速度 + 剩余时间）、目录选择（桌面）/OPFS 自动、iOS 最终系统导出按钮及中文故障提示；不提供单独清理按钮。
 - 风格：深色，跟随上游 CSS 变量体系（`shared/style.css` 保留，微调文案）。
 - 单页构建模式（`mode: "standalone"`）：只构建 app/index.html → `dist/Eternal-Wave.html`。
 

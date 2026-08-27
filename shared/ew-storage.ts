@@ -3,7 +3,7 @@
 // 两种实现：
 // - DesktopDirectoryBackend：File System Access API（桌面 Chrome/Edge/麒麟），
 //   用户选择一个目录，写入 .ewpart 分片文件与 .ewckpt 检查点。
-// - OPFSBackend：Origin Private File System（iOS PWA / 支持 OPFS 的浏览器），
+// - OPFSBackend：Origin Private File System（iOS/Android/支持 OPFS 的浏览器），
 //   固定使用虚拟根目录，实现相同检查点语义。
 //
 // 接口全部异步、与 UI 无关，便于单元测试用 mock 实现替换。
@@ -26,7 +26,7 @@ export interface StorageBackend {
   /** 当前目录显示名（desktop：目录名；OPFS：固定文案）。 */
   readonly label: string;
 
-  /** 让用户选择目录（desktop）/ 打开 OPFS 根（PWA）。失败抛错。 */
+  /** 让用户选择目录（desktop）/ 打开 OPFS 根（mobile）。失败抛错。 */
   selectAndOpen(): Promise<void>;
 
   /**
@@ -51,7 +51,13 @@ export interface StorageBackend {
   /** 流式计算 .ewpart 全部字节的 SHA-256（增量，不整载入内存）。 */
   streamSha256(): Promise<Uint8Array>;
 
-  /** 保存最终文件（桌面：写入已选目录；PWA：触发自动下载）。 */
+  /**
+   * 生成可交给系统分享面板的最终文件快照。
+   * iOS 必须在真实用户点击期间调用 navigator.share，不能异步现读 OPFS。
+   */
+  prepareFinalFile(name: string, mime: string): Promise<File>;
+
+  /** 保存最终文件（桌面：写入已选目录；OPFS：触发自动下载）。 */
   saveFinalFile(name: string, mime: string): Promise<void>;
 
   /** 删除 .ewpart/.ewckpt（保存成功后清理临时文件）。 */
@@ -65,19 +71,15 @@ export type AutoFinalizeResult =
   | { ok: true }
   | { ok: false; stage: "save" | "cleanup"; error: unknown };
 
-/**
- * 校验完成后的统一收尾：先保存最终文件，成功后才删除临时文件。
- *
- * 顺序不能颠倒；尤其在 iOS/OPFS 中，自动下载若在创建 Blob 前失败，必须
- * 保留 .ewpart 与检查点，避免已接收并通过 SHA-256 的文件不可恢复。
- */
-export async function autoSaveAndCleanup(
+/** 执行保存动作，并且只在保存成功后清理临时文件。 */
+export async function saveThenCleanup(
   backend: StorageBackend,
-  name: string,
-  mime: string,
+  save: () => Promise<void>,
 ): Promise<AutoFinalizeResult> {
   try {
-    await backend.saveFinalFile(name, mime);
+    // save() 在第一个 await 之前同步调用；由点击处理器传入 navigator.share
+    // 时，WebKit 的瞬时用户激活不会在调用前丢失。
+    await save();
   } catch (error) {
     return { ok: false, stage: "save", error };
   }
@@ -87,6 +89,20 @@ export async function autoSaveAndCleanup(
     return { ok: false, stage: "cleanup", error };
   }
   return { ok: true };
+}
+
+/**
+ * 校验完成后的统一收尾：先保存最终文件，成功后才删除临时文件。
+ *
+ * 顺序不能颠倒；保存或系统分享若失败，必须保留 .ewpart 与检查点，避免
+ * 已接收并通过 SHA-256 的文件不可恢复。
+ */
+export async function autoSaveAndCleanup(
+  backend: StorageBackend,
+  name: string,
+  mime: string,
+): Promise<AutoFinalizeResult> {
+  return saveThenCleanup(backend, () => backend.saveFinalFile(name, mime));
 }
 
 // ---- 工具：浏览器能力探测 ----
@@ -288,6 +304,14 @@ export function createDesktopBackend(): StorageBackend {
       return hash.digest();
     },
 
+    async prepareFinalFile(name, mime) {
+      if (!partHandle) throw new Error("尚未初始化传输");
+      const file = await partHandle.getFile();
+      if (file.size < fileLen) throw new Error(`临时文件不完整，仍缺少 ${fileLen - file.size} 字节`);
+      const blob = file.slice(0, fileLen, mime || "application/octet-stream");
+      return new File([blob], name, { type: blob.type, lastModified: Date.now() });
+    },
+
     async saveFinalFile(name, mime) {
       if (!dirHandle || !partHandle) throw new Error("尚未初始化传输");
       // 直接写入用户所选目录（而不是 a[download] 到浏览器默认下载目录）。
@@ -330,7 +354,7 @@ export function createDesktopBackend(): StorageBackend {
   };
 }
 
-// ================= OPFS 后端（iOS PWA / 支持 OPFS 的浏览器） =================
+// ================= OPFS 后端（iOS / Android / 支持 OPFS 的浏览器） =================
 
 export function createOpfsBackend(): StorageBackend {
   if (!isBrowser() || typeof navigator.storage?.getDirectory !== "function") {
@@ -346,10 +370,18 @@ export function createOpfsBackend(): StorageBackend {
   const ckptName = (): string => "eternal-wave.ewckpt";
   const ckptTmpName = (): string => "eternal-wave.ewckpt.tmp";
 
+  const prepareFinalFile = async (name: string, mime: string): Promise<File> => {
+    if (!partHandle) throw new Error("OPFS 传输尚未初始化");
+    const file = await partHandle.getFile();
+    if (file.size < fileLen) throw new Error(`临时文件不完整，仍缺少 ${fileLen - file.size} 字节`);
+    const blob = file.slice(0, fileLen, mime || "application/octet-stream");
+    return new File([blob], name, { type: blob.type, lastModified: Date.now() });
+  };
+
   return {
     kind: "opfs",
     get label() {
-      return "PWA 存储（OPFS，应用私有空间）";
+      return "本机临时存储（OPFS，浏览器私有空间）";
     },
 
     async selectAndOpen() {
@@ -458,25 +490,26 @@ export function createOpfsBackend(): StorageBackend {
       return hash.digest();
     },
 
+    prepareFinalFile,
+
     async saveFinalFile(name, mime) {
-      if (!partHandle) throw new Error("OPFS 传输尚未初始化");
-      const file = await partHandle.getFile();
-      const blob = file.slice(0, fileLen, mime || "application/octet-stream");
-      const url = URL.createObjectURL(blob);
+      const file = await prepareFinalFile(name, mime);
+      const url = URL.createObjectURL(file);
       const a = document.createElement("a");
       a.href = url;
       a.download = name;
       a.hidden = true;
       document.body.append(a);
       try {
-        // 挂入 DOM 后触发，兼容对游离 <a download> 支持不完整的 iOS Safari。
+        // 挂入 DOM 后触发，供 Android/桌面等支持脚本下载的 OPFS 环境使用。
+        // iOS 不走此路径，而是由真实点击调用 Web Share API。
         a.click();
       } catch (error) {
         a.remove();
         URL.revokeObjectURL(url);
         throw error;
       }
-      // 保留链接与 Blob URL 一段时间，让 iOS 下载管理器有时间接管读取；
+      // 保留链接与 Blob URL 一段时间，让浏览器下载管理器有时间接管读取；
       // OPFS 临时文件随后删除不影响这个不可变 Blob 快照。
       setTimeout(() => {
         a.remove();
@@ -499,16 +532,23 @@ export function createOpfsBackend(): StorageBackend {
 }
 
 // ---- 工厂：按环境自动选择 ----
-/** 自动选择后端：PWA/支持 OPFS 时用 OPFS，否则尝试桌面目录。 */
+export function preferredStorageBackend(
+  canPickDirectory: boolean,
+  canUseOpfs: boolean,
+): StorageBackend["kind"] | null {
+  if (canPickDirectory) return "desktop-dir";
+  if (canUseOpfs) return "opfs";
+  return null;
+}
+
+/** 自动选择后端：桌面目录能力优先，否则使用 OPFS；不依赖 PWA 显示模式。 */
 export function createAutoBackend(): StorageBackend {
-  const isPwa =
-    typeof window !== "undefined" &&
-    (window.matchMedia?.("(display-mode: standalone)").matches ||
-      (navigator as unknown as { standalone?: boolean }).standalone === true);
-  try {
-    if (isPwa) return createOpfsBackend();
-  } catch {
-    /* fall through */
-  }
-  return createDesktopBackend();
+  if (!isBrowser()) throw new Error("当前环境不是受支持的浏览器");
+  const kind = preferredStorageBackend(
+    typeof (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker === "function",
+    typeof navigator.storage?.getDirectory === "function",
+  );
+  if (kind === "desktop-dir") return createDesktopBackend();
+  if (kind === "opfs") return createOpfsBackend();
+  throw new Error("当前浏览器不支持本地接收存储，请使用新版 Chrome、Edge、Safari 或华为浏览器");
 }

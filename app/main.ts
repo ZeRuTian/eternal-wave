@@ -14,7 +14,7 @@ import { formatBytes } from "../shared/format";
 // 插件会在 resolve 时换成 worker-factory.inline.ts（base64 blob URL，file:// 可用）。
 import { createDecodeWorker } from "../receive/worker-factory";
 import { DecodeWorkerPool } from "../shared/worker-pool";
-import { probeCameraCapabilities, applyAdvancedConstraint } from "../shared/platform";
+import { probeCameraCapabilities, applyAdvancedConstraint, isIOS } from "../shared/platform";
 import { requestScreenWakeLock } from "../shared/wake-lock";
 import { statusLine } from "../shared/status-line";
 import { formatDuration } from "../shared/progress";
@@ -25,7 +25,12 @@ import {
   type PreparedTransfer,
 } from "../shared/ew-sender";
 import { MAX_FILE_BYTES, MAX_FILE_LABEL } from "../shared/ew-protocol";
-import { autoSaveAndCleanup, createAutoBackend, type StorageBackend } from "../shared/ew-storage";
+import {
+  autoSaveAndCleanup,
+  createAutoBackend,
+  saveThenCleanup,
+  type StorageBackend,
+} from "../shared/ew-storage";
 
 const MARGIN = 4;
 const LOOKAHEAD = 3;
@@ -457,6 +462,7 @@ for (const line of [
 async function pickDirectory(): Promise<void> {
   try {
     if (!backend) backend = createAutoBackend();
+    updateStorageButton();
     await backend.selectAndOpen();
     dirLabel.textContent = backend.label;
     dirLabel.classList.add("ready");
@@ -466,6 +472,10 @@ async function pickDirectory(): Promise<void> {
   }
 }
 pickDirBtn.addEventListener("click", () => void pickDirectory());
+
+function updateStorageButton(): void {
+  pickDirBtn.textContent = backend?.kind === "opfs" ? "准备本机存储" : "选择保存目录";
+}
 
 // 输入源：摄像头 / 屏幕捕获（同机互传）
 function currentSource(): "camera" | "screen" {
@@ -549,6 +559,7 @@ async function start() {
   if (!backend) {
     try {
       backend = createAutoBackend();
+      updateStorageButton();
     } catch (err) {
       offerRetry(errMsg(err));
       return;
@@ -669,8 +680,6 @@ async function start() {
       done = true;
       stopReceiveSession(true);
       progressStatus.style.display = "";
-      progressLabel.textContent = "100% · 正在自动保存";
-      etaLabel.textContent = "保存后将自动清理临时文件…";
       bar.style.width = "100%";
       progressEl.setAttribute("aria-valuenow", "100");
       preview.style.display = "none";
@@ -681,6 +690,16 @@ async function start() {
       }
 
       const activeBackend = backend;
+      if (isIOS && activeBackend.kind === "opfs") {
+        progressLabel.textContent = "100% · 正在准备系统保存";
+        etaLabel.textContent = "文件已校验，临时文件仍安全保留…";
+        await offerIOSFileExport(activeBackend, name, mime);
+        progressStatus.style.display = "none";
+        return;
+      }
+
+      progressLabel.textContent = "100% · 正在自动保存";
+      etaLabel.textContent = "保存后将自动清理临时文件…";
       const outcome = await autoSaveAndCleanup(activeBackend, name, mime);
       progressStatus.style.display = "none";
       if (outcome.ok) {
@@ -906,6 +925,87 @@ function showResult(message: string, ok: boolean): void {
   p.className = ok ? "hint" : "error-text";
   p.textContent = message;
   result.append(p);
+}
+
+type FileShareData = { files: File[]; title?: string; text?: string };
+type FileShareNavigator = Navigator & {
+  canShare?: (data: FileShareData) => boolean;
+  share?: (data: FileShareData) => Promise<void>;
+};
+
+function isShareCancelled(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+/**
+ * iOS 安全导出：WebKit 不允许在异步接收回调中可靠地自动下载 Blob。
+ * 先把 OPFS 数据准备为 File，再由一次真实点击同步调用 navigator.share；
+ * 分享成功后才清理，取消或失败均保留可恢复的完整临时文件。
+ */
+async function offerIOSFileExport(activeBackend: StorageBackend, name: string, mime: string): Promise<void> {
+  let finalFile: File;
+  try {
+    finalFile = await activeBackend.prepareFinalFile(name, mime);
+  } catch (error) {
+    showResult(`${name} 已通过校验，但准备系统保存失败：${errMsg(error)}。临时文件已保留。`, false);
+    return;
+  }
+
+  const shareNavigator = navigator as FileShareNavigator;
+  const shareData: FileShareData = { files: [finalFile], title: name };
+  let canShare = typeof shareNavigator.share === "function";
+  if (canShare && typeof shareNavigator.canShare === "function") {
+    try {
+      canShare = shareNavigator.canShare(shareData);
+    } catch {
+      canShare = false;
+    }
+  }
+  if (!canShare) {
+    showResult(
+      `${name} 已通过校验，但当前 iOS 版本不支持文件系统分享。请升级 iOS 后重新打开本应用，临时文件已保留。`,
+      false,
+    );
+    return;
+  }
+
+  const saveButton = document.createElement("button");
+  saveButton.type = "button";
+  saveButton.className = "receive-start mobile-save-button";
+
+  const renderPrompt = (message: string, ok: boolean): void => {
+    showResult(message, ok);
+    saveButton.disabled = false;
+    saveButton.textContent = "存储到“文件”…";
+    result.append(saveButton);
+  };
+
+  renderPrompt(
+    `${name} 已接收并通过校验。点击下方按钮，然后在系统面板中选择“存储到‘文件’”；保存成功后临时分片会自动清理。`,
+    true,
+  );
+
+  saveButton.addEventListener("click", async () => {
+    saveButton.disabled = true;
+    saveButton.textContent = "正在打开系统面板…";
+    const outcome = await saveThenCleanup(activeBackend, () => shareNavigator.share!(shareData));
+    if (outcome.ok) {
+      showResult(`${name} 已完成系统导出，临时文件已自动清理。`, true);
+      stopReceiveSession();
+      return;
+    }
+    if (outcome.stage === "cleanup") {
+      showResult(`${name} 已完成系统导出，但临时文件自动清理失败：${errMsg(outcome.error)}。`, false);
+      stopReceiveSession();
+      return;
+    }
+    renderPrompt(
+      isShareCancelled(outcome.error)
+        ? `已取消系统保存，${name} 的临时文件仍完整保留，可再次尝试。`
+        : `系统保存失败：${errMsg(outcome.error)}。临时文件仍完整保留，可再次尝试。`,
+      false,
+    );
+  });
 }
 
 /** 丢弃早于窗口的时间戳并原地裁剪数组，返回窗口内数量。

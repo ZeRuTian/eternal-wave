@@ -1505,6 +1505,12 @@ button:disabled {
   margin: 18px auto 0;
 }
 
+#result .mobile-save-button {
+  width: min(100%, 320px);
+  min-height: 48px;
+  margin-top: 0;
+}
+
 .setup-note {
   margin: 10px 0 0;
   color: var(--muted-dim);

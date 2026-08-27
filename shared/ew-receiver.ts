@@ -345,7 +345,12 @@ export class EwReceiver {
       this.checkpoint = newCheckpoint(transferId, m.segmentCount, m.fileLen);
       // 续传：若磁盘检查点属于同一传输（transferId 相同），沿用其完成位图
       const disk = await this.backend.loadCheckpoint();
-      if (disk && hex(disk.transferId) === idHex) {
+      if (
+        disk &&
+        hex(disk.transferId) === idHex &&
+        disk.segmentCount === m.segmentCount &&
+        disk.fileLen === m.fileLen
+      ) {
         this.checkpoint = disk;
         for (let i = 0; i < disk.segmentCount; i++) {
           if (isSegmentComplete(disk, i)) this.completedSegments.add(i);
@@ -365,6 +370,12 @@ export class EwReceiver {
     this.manifestChunks.clear();
     this.completed = completedCount(this.checkpoint);
     await this.cb.onManifest?.(m);
+    // 页面被系统分享面板切后台或用户取消保存后，完整分片与检查点会保留。
+    // 再次打开应用收到同一清单时无需等待不存在的“下一段”，直接重新校验并
+    // 进入完成导出流程；否则 100% 检查点会永久停在等待数据帧的状态。
+    if (this.completed >= this.checkpoint.segmentCount) {
+      await this.finish();
+    }
   }
 
   private async persistSegment(index: number, bytes: Uint8Array): Promise<void> {
