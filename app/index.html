@@ -59,14 +59,17 @@
 
       <div class="stage" id="stage" hidden><canvas id="qr" width="16" height="16"></canvas></div>
 
-      <label class="transfer-preset">传输预设
-        <select id="cfg-preset">
+      <div class="transfer-preset">
+        <div class="field-copy">
+          <label for="cfg-preset">传输预设</label>
+          <small id="preset-help">自定义可调整参数；切换预设或编码参数会重新开始传输。</small>
+        </div>
+        <select id="cfg-preset" aria-describedby="preset-help">
           <option value="camera" selected>手机扫码</option>
           <option value="screen">屏幕捕获</option>
           <option value="custom">自定义</option>
         </select>
-        <small>选择自定义可调整下方参数；传输中切换预设或修改编码参数会重新开始。</small>
-      </label>
+      </div>
 
       <details class="settings" id="send-settings">
         <summary>传输设置</summary>

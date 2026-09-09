@@ -314,6 +314,7 @@ details.settings label {
   letter-spacing: 0.08em;
 }
 details.settings select,
+.transfer-preset select,
 details.settings input[type="range"] {
   font: inherit;
   /* 16px is the floor that stops mobile Safari zooming the page when a control
@@ -829,6 +830,7 @@ details.settings input[type="range"] {
 .send-shell .status-line,
 .send-shell .file-picker,
 .send-shell .ew-passphrase,
+.send-shell .transfer-preset,
 .send-shell details.settings,
 .mode-picker,
 .note-composer {
@@ -1511,9 +1513,8 @@ button:disabled {
   margin-top: 0;
 }
 
-.transfer-preset { display: grid; gap: 8px; margin: 16px 0; }
-.transfer-preset select { width: 100%; min-height: 44px; font-size: 16px; }
-.transfer-preset small, .scan-feedback small { color: var(--muted); line-height: 1.6; }
+.transfer-preset select { width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; color-scheme: dark; }
+.scan-feedback small { color: var(--muted); line-height: 1.6; }
 .scan-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 #scan-guide { fill: none; stroke: rgba(255,255,255,.7); stroke-width: 2; stroke-dasharray: 12 8; vector-effect: non-scaling-stroke; }
 #scan-outline { fill: rgba(80,200,255,.06); stroke: var(--accent); stroke-width: 3; vector-effect: non-scaling-stroke; }
@@ -1608,7 +1609,8 @@ button:disabled {
 }
 
 /* 加密口令：与文件选择器组成同一条清晰的准备流程。 */
-.ew-passphrase {
+.ew-passphrase,
+.transfer-preset {
   display: grid;
   grid-template-columns: minmax(180px, 0.8fr) minmax(240px, 1.2fr);
   align-items: center;
@@ -1654,7 +1656,8 @@ button:disabled {
   padding: 10px 12px;
 }
 
-.password-control input:focus-visible {
+.password-control input:focus-visible,
+.transfer-preset select:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
   border-color: var(--line-bright);
@@ -1762,11 +1765,13 @@ button:disabled {
   }
 
   .ew-passphrase,
+  .transfer-preset,
   .setup-grid {
     grid-template-columns: 1fr;
   }
 
-  .ew-passphrase {
+  .ew-passphrase,
+  .transfer-preset {
     gap: 10px;
   }
 
