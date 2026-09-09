@@ -5,7 +5,7 @@
 //
 // 调度（对应 PLAN.md）：
 // - 开始连续发送清单帧 3 次；
-// - 此后每 MANIFEST_RESEND_INTERVAL(120) 个数据帧后重发 1 次清单帧；
+// - 此后每 MANIFEST_RESEND_INTERVAL(24) 个数据帧后重发 1 次清单帧；
 // - 数据帧按段推进：每段发送 ceil(1.35 × k) 个不同 seq 帧，发完切下一段；
 //   全部段发完一轮后回到段 0 继续循环；
 // - seq 全局递增（不按段重置），保证同段内 seq 唯一。
@@ -249,7 +249,7 @@ export async function* frameStream(p: PreparedTransfer): AsyncGenerator<Uint8Arr
   let dataSinceManifest = 0;
   let segIdx = 0;
   for (;;) {
-    // 每 120 个数据帧后重发一次清单
+    // 按配置间隔重发清单，允许接收端中途加入。
     if (dataSinceManifest >= MANIFEST_RESEND_INTERVAL) {
       for (const f of p.manifestFrames) yield f;
       dataSinceManifest = 0;

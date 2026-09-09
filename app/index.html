@@ -59,6 +59,16 @@
 
       <div class="stage" id="stage" hidden><canvas id="qr" width="16" height="16"></canvas></div>
 
+      <label class="transfer-preset">接收方式
+        <select id="cfg-preset">
+          <option value="camera" selected>手机摄像头 · 稳定优先</option>
+          <option value="easy">难以对准 · 大码低速</option>
+          <option value="screen">电脑屏幕捕获 · 高速</option>
+          <option value="custom">自定义</option>
+        </select>
+        <small>先选择接收方式再选文件；传输中更改预设会重新开始。</small>
+      </label>
+
       <details class="settings">
         <summary>传输设置</summary>
         <div class="row">
@@ -79,8 +89,8 @@
           <label>
             传输模式
             <select id="cfg-mode">
-              <option value="fast" selected>高速（冗余 1.2）</option>
-              <option value="robust">稳健（冗余 1.35）</option>
+              <option value="fast">高速（冗余 1.2）</option>
+              <option value="robust" selected>稳健（冗余 1.35）</option>
             </select>
           </label>
           <label>
@@ -156,6 +166,10 @@
           </div>
           <div class="preview">
             <video id="video" muted playsinline></video>
+            <svg id="scan-overlay" class="scan-overlay" aria-hidden="true" preserveAspectRatio="none">
+              <rect id="scan-guide" x="18%" y="18%" width="64%" height="64%" rx="12" />
+              <polygon id="scan-outline" points="" />
+            </svg>
             <div class="transfer-hud">
               <div class="progress-status" id="progress-status" style="display: none" aria-live="polite">
                 <strong id="progress-label">0% · 0 帧</strong>
@@ -165,6 +179,12 @@
               <div class="ew-segment-grid" id="segment-grid" hidden></div>
             </div>
           </div>
+        </div>
+        <div id="scan-feedback" class="scan-feedback" hidden>
+          <p id="scan-hint" role="status">将整个二维码和白边放入框内，保持清晰</p>
+          <div class="scan-summary"><span id="live-rate">等待信号</span><span id="live-eta">正在寻找二维码</span></div>
+          <button id="pause-receive" type="button" class="secondary-button">暂停接收</button>
+          <small>暂停保留本页接收进度；关闭页面仅保留已完成分段。请保持发送端继续播放。</small>
         </div>
         <div id="result"></div>
 
@@ -198,6 +218,8 @@
             <div class="metric"><div class="k">已用时间</div><div class="v" id="m-time">—</div></div>
             <div class="metric"><div class="k">新帧/重复</div><div class="v" id="m-frames">—</div></div>
             <div class="metric"><div class="k">已收分段</div><div class="v" id="m-segments">—</div></div>
+            <div class="metric"><div class="k">解码耗时</div><div class="v" id="m-decode-ms">—</div></div>
+            <div class="metric"><div class="k">处理繁忙丢帧</div><div class="v" id="m-busy">—</div></div>
           </div>
         </details>
 
@@ -214,7 +236,7 @@
             </label>
             <label>
               采集帧率
-              <select id="cfg-capfps"><option>30</option><option selected>60</option></select>
+              <select id="cfg-capfps"><option selected>30</option><option>60</option></select>
             </label>
             <label>
               解码线程

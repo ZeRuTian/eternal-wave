@@ -211,6 +211,25 @@ test("完整检查点重新打开后收到同一清单会直接校验并再次�
   assert.equal(completed, 1);
 });
 
+test("续传进度按实际分段字节加权，而非将末尾 1 字节计作半个文件", async () => {
+  const tid = new Uint8Array(16).fill(0x71);
+  const backend = new MemoryBackend();
+  backend.checkpoint = newCheckpoint(tid, 2, SEGMENT_SIZE + 1);
+  markSegmentComplete(backend.checkpoint, 0);
+  const recv = new EwReceiver();
+  await recv.attachBackend(backend);
+  recv.handleFrame(manifestFrame(makeManifest({
+    fileLen: SEGMENT_SIZE + 1, segmentCount: 2,
+    segmentParams: [
+      { encodedLen: SEGMENT_SIZE, segCrc32: 1, noncePrefix: null },
+      { encodedLen: 1, segCrc32: 1, noncePrefix: null },
+    ],
+  }), tid));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(recv.progressInfo?.fraction, 0.99);
+  assert.equal(recv.completed, 1);
+});
+
 test("接收端统计唯一帧与重复帧", async () => {
   const tid = new Uint8Array(16).fill(0xcc);
   const recv = new EwReceiver();

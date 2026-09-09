@@ -1,7 +1,7 @@
 {
   "name": "eternal-wave",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "license": "MIT",
   "description": "Offline file transfer using fountain-coded animated QR codes — screen to camera, no network. 简体中文单页，支持最大 256 MB。",
   "type": "module",

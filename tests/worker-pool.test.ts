@@ -39,6 +39,23 @@ function harness() {
 
 const frame = (n: number) => new Uint8Array([n]);
 
+test("misses carry diagnostics, and replies from retired workers are ignored", () => {
+  const workers: FakeWorker[] = [];
+  const reports: number[] = [];
+  const pool = new DecodeWorkerPool(() => {
+    const worker = new FakeWorker(workers.length);
+    workers.push(worker);
+    return worker;
+  }, () => undefined, report => reports.push(report.id));
+  pool.resize(1);
+  workers[0]!.reply(null, 3);
+  pool.resize(0);
+  pool.resize(1);
+  workers[0]!.reply(frame(1), 4);
+  workers[1]!.reply(null, 5);
+  assert.deepEqual(reports, [3, 5]);
+});
+
 test("the pool grows and shrinks to the requested size", () => {
   const { pool, created } = harness();
   pool.resize(3);

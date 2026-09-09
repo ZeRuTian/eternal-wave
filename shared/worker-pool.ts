@@ -14,10 +14,7 @@ export interface PoolWorker {
   terminate(): void;
 }
 
-interface DecodeMessage {
-  id: number;
-  bytes: Uint8Array | null;
-}
+import type { ScanReport } from "./scan-feedback";
 
 export class DecodeWorkerPool {
   private readonly workers: PoolWorker[] = [];
@@ -26,6 +23,7 @@ export class DecodeWorkerPool {
   constructor(
     private readonly create: () => PoolWorker,
     private readonly onDecoded: (bytes: Uint8Array) => void,
+    private readonly onReport?: (report: ScanReport) => void,
   ) {}
 
   get size(): number {
@@ -47,9 +45,11 @@ export class DecodeWorkerPool {
       const slot = this.workers.length;
       const worker = this.create();
       worker.onmessage = (event: MessageEvent) => {
-        const { id, bytes } = event.data as DecodeMessage;
+        if (this.workers[slot] !== worker) return;
+        const { id, bytes } = event.data as ScanReport;
         if (id === -1) return; // warm-up ping, no frame attached
         this.busy[slot] = false;
+        this.onReport?.(event.data as ScanReport);
         if (bytes) this.onDecoded(bytes);
       };
       this.workers.push(worker);

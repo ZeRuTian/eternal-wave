@@ -54,6 +54,8 @@ export class EwReceiver {
   private passphraseCache = new Map<string, string>(); // transferIdHex → 口令（本次会话内记忆）
   private currentTransferIdHex = "";
   private done = false;
+  /** Useful unique encoded payload accepted for unfinished segments. */
+  usefulBytes = 0;
 
   framesSeen = 0;
   framesNew = 0;
@@ -104,18 +106,32 @@ export class EwReceiver {
     return Array.from(this.completedSegments).sort((a, b) => a - b);
   }
 
+  /** Conservative encoded bytes still needed, accounting for per-segment compression. */
+  get remainingEncodedBytes(): number {
+    if (!this.manifest || this.done) return 0;
+    return this.manifest.segmentParams.reduce((sum, segment, index) => {
+      if (this.completedSegments.has(index)) return sum;
+      const decoder = this.decoders.get(index);
+      const arrived = decoder ? decoder.framesNew * decoder.blockLen : 0;
+      return sum + Math.max(segment.encodedLen * 0.05, segment.encodedLen * SEGMENT_COVERAGE - arrived);
+    }, 0);
+  }
+
   /** 供 UI 使用的连续进度；已完成段 + 正在解码段的唯一帧比例。 */
   get progressInfo(): { fraction: number; completed: number; total: number } | null {
     if (!this.manifest) return null;
     if (this.done) return { fraction: 1, completed: this.manifest.segmentCount, total: this.manifest.segmentCount };
-    let segmentUnits = this.completedSegments.size;
+    let receivedBytes = 0;
+    for (const index of this.completedSegments) {
+      receivedBytes += deriveOrigLen(index, this.manifest.fileLen, SEGMENT_SIZE);
+    }
     for (const [index, dec] of this.decoders) {
       if (this.completedSegments.has(index)) continue;
       const expectedFrames = Math.max(dec.k + 1, Math.ceil(dec.k * SEGMENT_COVERAGE));
-      segmentUnits += Math.min(0.99, dec.framesNew / expectedFrames);
+      receivedBytes += deriveOrigLen(index, this.manifest.fileLen, SEGMENT_SIZE) * Math.min(0.99, dec.framesNew / expectedFrames);
     }
     return {
-      fraction: Math.min(0.99, segmentUnits / this.manifest.segmentCount),
+      fraction: Math.min(0.99, receivedBytes / this.manifest.fileLen),
       completed: this.completed,
       total: this.manifest.segmentCount,
     };
@@ -176,6 +192,7 @@ export class EwReceiver {
     const dupBefore = dec.framesDup;
     dec.addFrame(h.seq, frame.payload);
     this.framesNew += dec.framesNew - newBefore;
+    this.usefulBytes += (dec.framesNew - newBefore) * frame.payload.length;
     this.framesDup += dec.framesDup - dupBefore;
     if (dec.isComplete) {
       // “正在处理”不能冒充“已经落盘”。旧实现提前写入 completedSegments，
@@ -415,6 +432,7 @@ export class EwReceiver {
   }
 
   private resetForNewTransfer(transferId: Uint8Array): void {
+    this.usefulBytes = 0;
     this.manifest = null;
     this.manifestChunks.clear();
     this.decoders.clear();

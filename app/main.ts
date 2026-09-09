@@ -15,9 +15,11 @@ import { formatBytes } from "../shared/format";
 import { createDecodeWorker } from "../receive/worker-factory";
 import { DecodeWorkerPool } from "../shared/worker-pool";
 import { probeCameraCapabilities, applyAdvancedConstraint, isIOS } from "../shared/platform";
-import { requestScreenWakeLock } from "../shared/wake-lock";
+import { requestScreenWakeLock, releaseScreenWakeLock } from "../shared/wake-lock";
 import { statusLine } from "../shared/status-line";
 import { formatDuration } from "../shared/progress";
+import { ReceiveRate, scanRegion, positionHint, type ScanPosition, type ScanReport } from "../shared/scan-feedback";
+import { parseFrame } from "../shared/ew-protocol";
 import { EwReceiver } from "../shared/ew-receiver";
 import {
   prepareTransfer,
@@ -51,6 +53,7 @@ function showPane(pane: "send" | "receive"): void {
   if (currentPane === pane) return;
   if (currentPane === "send") {
     generation++;
+    releaseScreenWakeLock();
     setStageFullscreen(false);
   } else if (currentPane === "receive") {
     stopReceiveSession();
@@ -119,6 +122,7 @@ function updateFilePicker(): void {
 }
 
 function stopTransfer(): void {
+  releaseScreenWakeLock();
   generation++;
   selectedFile = null;
   setStageFullscreen(false);
@@ -196,6 +200,7 @@ async function startStream(revealStage = false): Promise<void> {
   resizeDisplay = null;
   showStreamPanels(false);
   if (!selectedFile?.prepared) {
+    releaseScreenWakeLock();
     setStatus("选择文件开始");
     return;
   }
@@ -205,8 +210,8 @@ async function startStream(revealStage = false): Promise<void> {
   if (gen !== generation) return;
   const txFps = Number((document.getElementById("cfg-fps") as HTMLSelectElement).value);
   const frameBytes = prepared.blockLen + 48;
+  void requestScreenWakeLock();
   const ecc = (document.getElementById("cfg-ecc") as HTMLSelectElement).value as "L" | "M" | "Q" | "H";
-  const displayPx = Number((document.getElementById("cfg-size") as HTMLInputElement).value);
 
   const blockLen = prepared.blockLen;
   const stream = frameStream(prepared);
@@ -239,6 +244,7 @@ async function startStream(revealStage = false): Promise<void> {
   stage.hidden = false;
 
   const sizeCanvas = () => {
+    const displayPx = Number((document.getElementById("cfg-size") as HTMLInputElement).value);
     const dpr = window.devicePixelRatio || 1;
     const total = modules + 2 * MARGIN;
     let cssBudget: number;
@@ -335,8 +341,25 @@ async function startStream(revealStage = false): Promise<void> {
   requestAnimationFrame(tick);
 }
 
-for (const el of ["cfg-fps", "cfg-ecc", "cfg-size"]) {
+for (const el of ["cfg-fps", "cfg-ecc"]) {
   document.getElementById(el)!.addEventListener("change", () => void startStream());
+}
+document.getElementById("cfg-size")!.addEventListener("input", () => resizeDisplay?.());
+const preset = document.getElementById("cfg-preset") as HTMLSelectElement;
+preset.addEventListener("change", () => {
+  const profiles: Record<string, [string, string, string]> = {
+    camera: ["30", "2331", "robust"], easy: ["24", "1465", "robust"], screen: ["60", "2953", "fast"],
+  };
+  const values = profiles[preset.value];
+  if (!values) return;
+  ["cfg-fps", "cfg-bytes", "cfg-mode"].forEach((id, i) => {
+    (document.getElementById(id) as HTMLSelectElement).value = values[i]!;
+  });
+  (document.getElementById("cfg-ecc") as HTMLSelectElement).value = "L";
+  if (selectedFile) void prepareSelectedFile();
+});
+for (const id of ["cfg-fps", "cfg-bytes", "cfg-mode", "cfg-ecc"]) {
+  document.getElementById(id)!.addEventListener("change", () => { preset.value = "custom"; });
 }
 document.getElementById("cfg-bytes")!.addEventListener("change", () => void prepareSelectedFile());
 document.getElementById("cfg-mode")!.addEventListener("change", () => {
@@ -375,6 +398,26 @@ const cameraActual = document.getElementById("camera-actual")!;
 const noSignalToast = document.getElementById("no-signal")!;
 const noSignalDialog = document.getElementById("no-signal-dialog") as HTMLDialogElement;
 const noSignalTips = document.getElementById("no-signal-tips")!;
+const scanFeedback = document.getElementById("scan-feedback")!;
+const receiveSetup = document.querySelector<HTMLElement>(".receive-setup")!;
+const scanHint = document.getElementById("scan-hint")!;
+const liveRate = document.getElementById("live-rate")!;
+const liveEta = document.getElementById("live-eta")!;
+const pauseBtn = document.getElementById("pause-receive") as HTMLButtonElement;
+const scanOverlay = document.getElementById("scan-overlay")!;
+const scanOutline = document.getElementById("scan-outline")!;
+const scanGuide = document.getElementById("scan-guide")!;
+const receiveRate = new ReceiveRate();
+let paused = false;
+let pausedAt = 0;
+let pausedByVisibility = false;
+let lastSignalAt = -Infinity;
+let lastPositionAt = -Infinity;
+let lastPosition: ScanPosition | null = null;
+let lastReportId = -1;
+let decodeMs = 0;
+let busyDrops = 0;
+let fallbackAt = 0;
 
 let backend: StorageBackend | null = null;
 let receiver: EwReceiver | null = null;
@@ -489,7 +532,7 @@ const HARDWARE_CONCURRENCY = navigator.hardwareConcurrency || 4;
 const MAX_WORKERS = Math.max(1, Math.min(HARDWARE_CONCURRENCY - 1, 5));
 function populateWorkerChoices(): void {
   cfgWorkers.textContent = "";
-  const recommend = currentSource() === "screen" ? Math.min(MAX_WORKERS + 1, 5) : MAX_WORKERS;
+  const recommend = currentSource() === "screen" ? Math.min(MAX_WORKERS + 1, 5) : Math.min(MAX_WORKERS, 2);
   for (let i = 1; i <= Math.max(MAX_WORKERS, recommend); i++) {
     const opt = document.createElement("option");
     opt.value = String(i);
@@ -550,6 +593,16 @@ async function start() {
     return;
   }
   startBtn.disabled = true;
+  paused = false;
+  pausedByVisibility = false;
+  receiveRate.reset();
+  captureTimes.length = 0;
+  decodeTimes.length = 0;
+  busyDrops = 0;
+  decodeMs = 0;
+  lastPosition = null;
+  lastSignalAt = lastPositionAt = -Infinity;
+  lastReportId = -1;
   startBtn.textContent = "准备接收…";
   result.textContent = "";
   segmentGrid.hidden = true;
@@ -649,6 +702,11 @@ async function start() {
   if (diagnosticsEl) diagnosticsEl.style.display = "block";
   video.srcObject = stream;
   await video.play().catch(() => undefined);
+  if (sessionId !== receiveSessionId) return;
+  scanFeedback.hidden = false;
+  receiveSetup.hidden = true;
+  pauseBtn.textContent = "暂停接收";
+  pauseBtn.disabled = false;
   if (source === "camera") await populateCameraChoices();
   const settings = stream.getVideoTracks()[0]?.getSettings();
   recvStatus.setStatus(
@@ -662,6 +720,7 @@ async function start() {
   done = false;
   receiver = new EwReceiver({
     onManifest: async (m) => {
+      receiveRate.reset();
       recvStatus.setStatus(`收到清单：${m.name} · ${formatBytes(m.fileLen)}${m.encrypted ? " · 加密" : ""}`);
       buildSegmentGrid(m.segmentCount);
       progressStatus.style.display = "";
@@ -759,6 +818,7 @@ async function start() {
 
 /** 统一释放摄像头/屏幕捕获、worker 和计时器；keepDone 用于完成后的保存阶段。 */
 function stopReceiveSession(keepDone = false): void {
+  releaseScreenWakeLock();
   receiveSessionId++;
   captureGen++;
   if (resolvePassphrase) settlePassphrase(null);
@@ -769,6 +829,10 @@ function stopReceiveSession(keepDone = false): void {
   stream = null;
   pool?.resize(0);
   preview.style.display = "none";
+  scanFeedback.hidden = true;
+  receiveSetup.hidden = false;
+  paused = false;
+  pausedByVisibility = false;
   if (!keepDone) {
     done = false;
     receiver = null;
@@ -783,11 +847,91 @@ function stopReceiveSession(keepDone = false): void {
 function decodePool(): DecodeWorkerPool {
   return new DecodeWorkerPool(createDecodeWorker, (bytes) => {
     decodeTimes.push(performance.now());
-    if (done || !receiver) return;
+    if (done || paused || !receiver) return;
+    if (!parseFrame(bytes)) return;
+    lastSignalAt = performance.now();
     noSignalDismiss();
+    const before = receiver.usefulBytes;
     receiver.handleFrame(bytes);
-  });
+    receiveRate.add(performance.now(), receiver.usefulBytes - before);
+  }, handleScanReport);
 }
+
+function handleScanReport(report: ScanReport): void {
+  if (done || paused || report.id <= lastReportId) return;
+  lastReportId = report.id;
+  decodeMs = report.elapsedMs ?? 0;
+  if (!report.position) return;
+  const points = Object.values(report.position);
+  if (points.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) return;
+  const region = report.region ?? { x: 0, y: 0 };
+  lastPosition = Object.fromEntries(Object.entries(report.position).map(([key, p]) =>
+    [key, { x: p.x + region.x, y: p.y + region.y }])) as unknown as ScanPosition;
+  lastPositionAt = performance.now();
+}
+
+function pauseReceiving(): void {
+  if (!stream || done || paused) return;
+  paused = true;
+  pausedAt = performance.now();
+  captureGen++;
+  releaseScreenWakeLock();
+  stream.getVideoTracks().forEach(t => { t.enabled = false; });
+  pool?.resize(0);
+  noSignalDismiss();
+  pauseBtn.textContent = "继续接收";
+  scanHint.textContent = "已暂停，当前页面的接收进度已保留";
+  liveEta.textContent = "暂停期间不估算剩余时间";
+  liveRate.textContent = "已暂停";
+}
+
+async function resumeReceiving(): Promise<void> {
+  if (!paused || !stream || done || pauseBtn.disabled) return;
+  pauseBtn.disabled = true;
+  const session = receiveSessionId;
+  try {
+    if (stream.getVideoTracks().some(t => t.readyState === "ended")) {
+      if (currentSource() === "screen") throw new Error("屏幕共享已结束，请重新开始屏幕接收");
+      const recovered = await navigator.mediaDevices.getUserMedia({ audio: false, video: {
+        ...(cfgCamera.value ? { deviceId: { exact: cfgCamera.value } } : { facingMode: "environment" }),
+        width: { ideal: Number(cfgWidth.value) }, frameRate: { ideal: Number(cfgCapFps.value) },
+      } });
+      if (session !== receiveSessionId) { recovered.getTracks().forEach(t => t.stop()); return; }
+      stream = recovered;
+      video.srcObject = stream;
+    }
+    stream.getVideoTracks().forEach(t => { t.enabled = true; });
+    await video.play();
+    if (session !== receiveSessionId) return;
+    startTsRef.current += performance.now() - pausedAt;
+    paused = false;
+    receiveRate.reset();
+    captureTimes.length = decodeTimes.length = 0;
+    lastPosition = null;
+    lastSignalAt = -Infinity;
+    pool.resize(Number(cfgWorkers.value));
+    pauseBtn.textContent = "暂停接收";
+    scheduleFrame(++captureGen);
+    await requestScreenWakeLock();
+  } catch (error) {
+    scanHint.textContent = `恢复摄像头失败：${errMsg(error)}。进度已保留，请点击继续重试。`;
+  } finally {
+    if (session === receiveSessionId) pauseBtn.disabled = false;
+  }
+}
+pauseBtn.addEventListener("click", () => {
+  pausedByVisibility = false;
+  if (paused) void resumeReceiving(); else pauseReceiving();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && stream && !paused && !done) {
+    pausedByVisibility = true;
+    pauseReceiving();
+  } else if (!document.hidden && pausedByVisibility) {
+    pausedByVisibility = false;
+    void resumeReceiving();
+  }
+});
 
 function reportCameraSettings(): void {
   const track = stream?.getVideoTracks()[0];
@@ -847,7 +991,7 @@ async function applyCameraExtras(): Promise<void> {
 }
 
 async function applyReceiveSettings(): Promise<void> {
-  if (done) return;
+  if (done || paused) return;
   pool?.resize(Number(cfgWorkers.value));
   const track = stream?.getVideoTracks()[0];
   if (!track) return;
@@ -873,10 +1017,10 @@ async function applyReceiveSettings(): Promise<void> {
 type VideoRVFC = HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number };
 
 function scheduleFrame(gen: number): void {
-  if (done || gen !== captureGen) return;
+  if (done || paused || gen !== captureGen) return;
   const v = video as VideoRVFC;
   const next = () => {
-    if (done || gen !== captureGen) return;
+    if (done || paused || gen !== captureGen) return;
     captureFrame();
     scheduleFrame(gen);
   };
@@ -891,16 +1035,23 @@ function captureFrame(): void {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   if (!vw || !vh) return;
-  captureTimes.push(performance.now());
-  if (pool.busyCount === pool.size) return;
-  if (grab.width !== vw || grab.height !== vh) {
-    grab.width = vw;
-    grab.height = vh;
+  const now = performance.now();
+  captureTimes.push(now);
+  if (pool.busyCount === pool.size) { busyDrops++; return; }
+  // Refresh the full-frame search regularly and immediately after a lost lock.
+  const useRegion = lastPosition && now - lastPositionAt < 1000 && now - fallbackAt < 1500;
+  const region = useRegion ? scanRegion(lastPosition!, vw, vh) : { x: 0, y: 0, w: vw, h: vh };
+  if (!useRegion) fallbackAt = now;
+  if (region.w <= 0 || region.h <= 0) { lastPosition = null; return; }
+  if (grab.width !== region.w || grab.height !== region.h) {
+    grab.width = region.w;
+    grab.height = region.h;
   }
   const ctx = grab.getContext("2d", { willReadFrequently: true })!;
-  ctx.drawImage(video, 0, 0);
-  const img = ctx.getImageData(0, 0, vw, vh);
-  pool.submit({ id: frameId++, buf: img.data.buffer, w: vw, h: vh }, [img.data.buffer]);
+  ctx.drawImage(video, region.x, region.y, region.w, region.h, 0, 0, region.w, region.h);
+  const img = ctx.getImageData(0, 0, region.w, region.h);
+  pool.submit({ id: frameId++, buf: img.data.buffer, w: region.w, h: region.h, region,
+    fast: !!useRegion && now - lastSignalAt < 1000 }, [img.data.buffer]);
 }
 
 function buildSegmentGrid(count: number): void {
@@ -1022,10 +1173,13 @@ function trimWindow(times: number[], now: number, windowMs: number): number {
 
 function refreshProgress(): void {
   const now = performance.now();
+  if (paused) return;
   const capFps = trimWindow(captureTimes, now, 2000) / 2;
   const decFps = trimWindow(decodeTimes, now, 2000) / 2;
   document.getElementById("m-cap")!.textContent = capFps.toFixed(1);
   document.getElementById("m-dec")!.textContent = decFps.toFixed(1);
+  document.getElementById("m-decode-ms")!.textContent = `${decodeMs.toFixed(0)} ms`;
+  document.getElementById("m-busy")!.textContent = String(busyDrops);
   const r = receiver;
   if (!r) {
     document.getElementById("m-frames")!.textContent = "—";
@@ -1042,25 +1196,48 @@ function refreshProgress(): void {
   document.getElementById("m-time")!.textContent = elapsed > 0 ? `${elapsed.toFixed(1)} s` : "—";
 
   const info = r.progressInfo;
+  const rate = receiveRate.read(now);
+  const signalLost = now - lastSignalAt >= 3000;
+  const located = lastPosition && now - lastPositionAt < 1500;
+  scanOverlay.setAttribute("viewBox", `0 0 ${video.videoWidth || 4} ${video.videoHeight || 3}`);
+  if (video.videoWidth && video.videoHeight) {
+    const box = video.parentElement!;
+    box.style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
+    box.style.maxHeight = "none";
+  }
+  scanGuide.style.display = located ? "none" : "";
+  scanOutline.setAttribute("points", located ? Object.values(lastPosition!).map(p => `${p.x},${p.y}`).join(" ") : "");
+  const geometryHint = located ? positionHint(lastPosition!, video.videoWidth, video.videoHeight) : "";
+  if (geometryHint.includes("偏小") || geometryHint.includes("边缘")) {
+    scanHint.textContent = geometryHint;
+  } else if (!r.hasManifest && !signalLost) {
+    scanHint.textContent = "已找到传输二维码，正在等待文件信息，请保持对准";
+  } else if (located && signalLost) {
+    scanHint.textContent = positionHint(lastPosition!, video.videoWidth, video.videoHeight) + "；若一直无法读取，请检查对焦或使用大码低速预设";
+  } else if (signalLost) {
+    scanHint.textContent = r.hasManifest ? "信号中断，请将完整二维码和白边重新放入框内；已收分段保留"
+      : "将整个二维码和白边放入框内，保持清晰；看不清时放大发送端二维码";
+  } else if (rate.stalled) {
+    scanHint.textContent = "二维码信号正常，正在等待未收齐分段的补帧";
+  } else {
+    scanHint.textContent = "正在接收 · " + (located ? positionHint(lastPosition!, video.videoWidth, video.videoHeight) : "二维码信号正常");
+  }
+  const rateText = rate.bytesPerSecond > 0 ? `${(rate.bytesPerSecond / 1024).toFixed(1)} KiB/s · 有效新数据` : "暂无新增数据";
+  document.getElementById("m-rate")!.textContent = rateText;
+  liveRate.textContent = rateText;
+  let eta = !r.hasManifest ? "等待文件信息" : signalLost ? "信号中断，暂不估时" : rate.stalled ? "等待补帧，暂不估时" : "正在测量速度…";
+  if (r.hasManifest && !signalLost && !rate.stalled && rate.bytesPerSecond > 0) {
+    const seconds = r.remainingEncodedBytes / rate.bytesPerSecond;
+    eta = `剩余约 ${formatDuration(seconds)}–${formatDuration(seconds * 1.5)}（不含补帧轮转等待）`;
+  }
+  liveEta.textContent = eta;
+  etaLabel.textContent = eta;
   if (info && info.total > 0) {
     const pct = Math.round(info.fraction * 100);
     bar.style.width = `${pct}%`;
     progressEl.setAttribute("aria-valuenow", String(pct));
     progressLabel.textContent = `${pct}% · 分段 ${info.completed}/${info.total}`;
     progressStatus.style.display = "";
-    // 估算 ETA：用全传输帧到达率近似
-    const totalFrames = r.framesNew + r.framesDup;
-    const elapsedS = (now - (startTsRef.current || now)) / 1000;
-    if (r.manifestInfo && totalFrames > 3 && elapsedS > 1 && info.fraction > 0 && info.fraction < 1) {
-      const ratePerS = totalFrames / elapsedS;
-      const remainingFrames = totalFrames * ((1 - info.fraction) / info.fraction);
-      const etaS = remainingFrames / ratePerS;
-      etaLabel.textContent = `剩余约 ${formatDuration(etaS)}`;
-      // 有效速率按完成比例近似，包含当前正在解码的分段，且不会把最后一段按 4 MiB 高估。
-      const bytesReceived = info.fraction * r.manifestInfo.fileLen;
-      const rateKBps = elapsedS > 0 ? bytesReceived / elapsedS / 1024 : 0;
-      document.getElementById("m-rate")!.textContent = rateKBps > 0 ? `${rateKBps.toFixed(1)} KB/s` : "—";
-    }
   }
 }
 

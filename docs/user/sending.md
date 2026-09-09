@@ -1,5 +1,8 @@
 # Sending
 
+> This page describes the retained upstream `/send/` demo, not the unified Eternal Wave application.
+> For current presets, mobile scanning and the 256 MB file limit, see [the project README](../../README.md).
+
 Open `/send/`. Two modes, switched at the top: **File** and **Text snippet**.
 
 - **File** — tap **Select File** (any file up to 64 MB). Streaming starts immediately; the button becomes **Stop transfer**. Files are gzip-compressed only when that actually shrinks the optical payload.

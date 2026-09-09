@@ -1511,6 +1511,18 @@ button:disabled {
   margin-top: 0;
 }
 
+.transfer-preset { display: grid; gap: 8px; margin: 16px 0; }
+.transfer-preset select { width: 100%; min-height: 44px; font-size: 16px; }
+.transfer-preset small, .scan-feedback small { color: var(--muted); line-height: 1.6; }
+.scan-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+#scan-guide { fill: none; stroke: rgba(255,255,255,.7); stroke-width: 2; stroke-dasharray: 12 8; vector-effect: non-scaling-stroke; }
+#scan-outline { fill: rgba(80,200,255,.06); stroke: var(--accent); stroke-width: 3; vector-effect: non-scaling-stroke; }
+.scan-feedback { padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); display: grid; gap: 12px; }
+.scan-feedback[hidden] { display: none; }
+.scan-feedback p { margin: 0; line-height: 1.6; }
+.scan-feedback button { min-height: 44px; }
+.scan-summary { display: flex; flex-wrap: wrap; gap: 8px 18px; color: var(--accent); font-variant-numeric: tabular-nums; }
+
 .setup-note {
   margin: 10px 0 0;
   color: var(--muted-dim);

@@ -5,6 +5,7 @@
 
 import wasmUrl from "./wasm-url";
 import { prepareZXingModule, readBarcodes } from "zxing-wasm/reader";
+import type { ScanRegion } from "../shared/scan-feedback";
 
 prepareZXingModule({
   overrides: {
@@ -19,14 +20,21 @@ const ctx = self as unknown as {
 };
 
 ctx.onmessage = async (e: MessageEvent) => {
-  const { id, buf, w, h } = e.data as { id: number; buf: ArrayBuffer; w: number; h: number };
+  const { id, buf, w, h, region, fast } = e.data as {
+    id: number; buf: ArrayBuffer; w: number; h: number; region?: ScanRegion; fast?: boolean;
+  };
+  const start = performance.now();
   try {
     const img = new ImageData(new Uint8ClampedArray(buf), w, h);
-    const results = await readBarcodes(img, { formats: ["QRCode"], maxNumberOfSymbols: 1 });
+    const results = await readBarcodes(img, {
+      formats: ["QRCode"], maxNumberOfSymbols: 1, tryHarder: !fast,
+      tryInvert: !fast, tryDownscale: !fast, returnErrors: true,
+    });
     const r = results.find((x) => x.isValid && x.bytes.length > 0);
-    ctx.postMessage({ id, bytes: r ? r.bytes : null });
+    ctx.postMessage({ id, bytes: r ? r.bytes : null, position: (r ?? results[0])?.position,
+      region, elapsedMs: performance.now() - start });
   } catch {
-    ctx.postMessage({ id, bytes: null });
+    ctx.postMessage({ id, bytes: null, region, elapsedMs: performance.now() - start });
   }
 };
 

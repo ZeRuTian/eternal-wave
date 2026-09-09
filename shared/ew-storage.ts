@@ -494,7 +494,11 @@ export function createOpfsBackend(): StorageBackend {
 
     async saveFinalFile(name, mime) {
       const file = await prepareFinalFile(name, mime);
-      const url = URL.createObjectURL(file);
+      // File/slice/new File can still reference OPFS backing storage. Materialize
+      // bytes before cleanup, otherwise deleting .ewpart can cancel the download.
+      // Allocation/read errors propagate so recovery data is preserved.
+      const downloadBlob = new Blob([await file.arrayBuffer()], { type: file.type });
+      const url = URL.createObjectURL(downloadBlob);
       const a = document.createElement("a");
       a.href = url;
       a.download = name;
@@ -510,7 +514,7 @@ export function createOpfsBackend(): StorageBackend {
         throw error;
       }
       // 保留链接与 Blob URL 一段时间，让浏览器下载管理器有时间接管读取；
-      // OPFS 临时文件随后删除不影响这个不可变 Blob 快照。
+      // OPFS 临时文件随后删除不影响这个已独立读取的 Blob。
       setTimeout(() => {
         a.remove();
         URL.revokeObjectURL(url);

@@ -43,8 +43,8 @@ export const MANIFEST_PROTOCOL_VERSION = 1;
 export const MANIFEST_FLAG_ENCRYPTED = 1 << 0;
 export const MANIFEST_FLAG_ALLOW_GZIP = 1 << 1;
 
-// 清单帧每 120 个数据帧后重发一次（发送调度）。
-export const MANIFEST_RESEND_INTERVAL = 120;
+// 清单帧每 24 个数据帧后重发一次，缩短接收端中途加入的等待。
+export const MANIFEST_RESEND_INTERVAL = 24;
 
 // 每段发送 ≈ 1.35 × k 个不同帧后切换下一段（发送调度）。
 export const SEGMENT_COVERAGE = 1.35;
