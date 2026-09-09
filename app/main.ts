@@ -18,7 +18,7 @@ import { probeCameraCapabilities, applyAdvancedConstraint, isIOS } from "../shar
 import { requestScreenWakeLock, releaseScreenWakeLock } from "../shared/wake-lock";
 import { statusLine } from "../shared/status-line";
 import { formatDuration } from "../shared/progress";
-import { ReceiveRate, scanRegion, positionHint, type ScanPosition, type ScanReport } from "../shared/scan-feedback";
+import { ReceiveRate, ScanTracker, scanRegion, type ScanReport } from "../shared/scan-feedback";
 import { parseFrame } from "../shared/ew-protocol";
 import { EwReceiver } from "../shared/ew-receiver";
 import {
@@ -409,15 +409,12 @@ const liveRate = document.getElementById("live-rate")!;
 const liveEta = document.getElementById("live-eta")!;
 const pauseBtn = document.getElementById("pause-receive") as HTMLButtonElement;
 const scanOverlay = document.getElementById("scan-overlay")!;
-const scanOutline = document.getElementById("scan-outline")!;
-const scanGuide = document.getElementById("scan-guide")!;
 const receiveRate = new ReceiveRate();
+const scanTracker = new ScanTracker();
 let paused = false;
 let pausedAt = 0;
 let pausedByVisibility = false;
 let lastSignalAt = -Infinity;
-let lastPositionAt = -Infinity;
-let lastPosition: ScanPosition | null = null;
 let lastReportId = -1;
 let decodeMs = 0;
 let busyDrops = 0;
@@ -604,8 +601,8 @@ async function start() {
   decodeTimes.length = 0;
   busyDrops = 0;
   decodeMs = 0;
-  lastPosition = null;
-  lastSignalAt = lastPositionAt = -Infinity;
+  scanTracker.reset();
+  lastSignalAt = -Infinity;
   lastReportId = -1;
   startBtn.textContent = "准备接收…";
   result.textContent = "";
@@ -865,13 +862,7 @@ function handleScanReport(report: ScanReport): void {
   if (done || paused || report.id <= lastReportId) return;
   lastReportId = report.id;
   decodeMs = report.elapsedMs ?? 0;
-  if (!report.position) return;
-  const points = Object.values(report.position);
-  if (points.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) return;
-  const region = report.region ?? { x: 0, y: 0 };
-  lastPosition = Object.fromEntries(Object.entries(report.position).map(([key, p]) =>
-    [key, { x: p.x + region.x, y: p.y + region.y }])) as unknown as ScanPosition;
-  lastPositionAt = performance.now();
+  scanTracker.update(report, video.videoWidth, video.videoHeight, performance.now());
 }
 
 function pauseReceiving(): void {
@@ -911,7 +902,7 @@ async function resumeReceiving(): Promise<void> {
     paused = false;
     receiveRate.reset();
     captureTimes.length = decodeTimes.length = 0;
-    lastPosition = null;
+    scanTracker.reset();
     lastSignalAt = -Infinity;
     pool.resize(Number(cfgWorkers.value));
     pauseBtn.textContent = "暂停接收";
@@ -1043,10 +1034,10 @@ function captureFrame(): void {
   captureTimes.push(now);
   if (pool.busyCount === pool.size) { busyDrops++; return; }
   // Refresh the full-frame search regularly and immediately after a lost lock.
-  const useRegion = lastPosition && now - lastPositionAt < 1000 && now - fallbackAt < 1500;
-  const region = useRegion ? scanRegion(lastPosition!, vw, vh) : { x: 0, y: 0, w: vw, h: vh };
+  const useRegion = scanTracker.position && now - scanTracker.at < 1000 && now - fallbackAt < 1500;
+  const region = useRegion ? scanRegion(scanTracker.position!, vw, vh) : { x: 0, y: 0, w: vw, h: vh };
   if (!useRegion) fallbackAt = now;
-  if (region.w <= 0 || region.h <= 0) { lastPosition = null; return; }
+  if (region.w <= 0 || region.h <= 0) { scanTracker.reset(); return; }
   if (grab.width !== region.w || grab.height !== region.h) {
     grab.width = region.w;
     grab.height = region.h;
@@ -1202,29 +1193,21 @@ function refreshProgress(): void {
   const info = r.progressInfo;
   const rate = receiveRate.read(now);
   const signalLost = now - lastSignalAt >= 3000;
-  const located = lastPosition && now - lastPositionAt < 1500;
   scanOverlay.setAttribute("viewBox", `0 0 ${video.videoWidth || 4} ${video.videoHeight || 3}`);
   if (video.videoWidth && video.videoHeight) {
     const box = video.parentElement!;
     box.style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
     box.style.maxHeight = "none";
   }
-  scanGuide.style.display = located ? "none" : "";
-  scanOutline.setAttribute("points", located ? Object.values(lastPosition!).map(p => `${p.x},${p.y}`).join(" ") : "");
-  const geometryHint = located ? positionHint(lastPosition!, video.videoWidth, video.videoHeight) : "";
-  if (geometryHint.includes("偏小") || geometryHint.includes("边缘")) {
-    scanHint.textContent = geometryHint;
-  } else if (!r.hasManifest && !signalLost) {
+  if (!r.hasManifest && !signalLost) {
     scanHint.textContent = "已找到传输二维码，正在等待文件信息，请保持对准";
-  } else if (located && signalLost) {
-    scanHint.textContent = positionHint(lastPosition!, video.videoWidth, video.videoHeight) + "；若一直无法读取，请检查对焦，或在发送端自定义设置中降低帧率和每帧字节数";
   } else if (signalLost) {
-    scanHint.textContent = r.hasManifest ? "信号中断，请将完整二维码和白边重新放入框内；已收分段保留"
-      : "将整个二维码和白边放入框内，保持清晰；看不清时放大发送端二维码";
+    scanHint.textContent = r.hasManifest ? "信号中断，请重新对准完整二维码和白边；接收进度已保留"
+      : "尚未读到数据。请保持二维码清晰、白边完整；可放大发送端二维码或降低每帧字节数";
   } else if (rate.stalled) {
     scanHint.textContent = "二维码信号正常，正在等待未收齐分段的补帧";
   } else {
-    scanHint.textContent = "正在接收 · " + (located ? positionHint(lastPosition!, video.videoWidth, video.videoHeight) : "二维码信号正常");
+    scanHint.textContent = "正在接收，二维码可正常读取，无需反复调整距离";
   }
   const rateText = rate.bytesPerSecond > 0 ? `${(rate.bytesPerSecond / 1024).toFixed(1)} KiB/s · 有效新数据` : "暂无新增数据";
   document.getElementById("m-rate")!.textContent = rateText;

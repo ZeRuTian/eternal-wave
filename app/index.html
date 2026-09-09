@@ -170,7 +170,6 @@
             <video id="video" muted playsinline></video>
             <svg id="scan-overlay" class="scan-overlay" aria-hidden="true" preserveAspectRatio="none">
               <rect id="scan-guide" x="18%" y="18%" width="64%" height="64%" rx="12" />
-              <polygon id="scan-outline" points="" />
             </svg>
             <div class="transfer-hud">
               <div class="progress-status" id="progress-status" style="display: none" aria-live="polite">
@@ -183,10 +182,10 @@
           </div>
         </div>
         <div id="scan-feedback" class="scan-feedback" hidden>
-          <p id="scan-hint" role="status">将整个二维码和白边放入框内，保持清晰</p>
+          <p id="scan-hint" role="status">请保持二维码清晰、白边完整</p>
           <div class="scan-summary"><span id="live-rate">等待信号</span><span id="live-eta">正在寻找二维码</span></div>
           <button id="pause-receive" type="button" class="secondary-button">暂停接收</button>
-          <small>暂停保留本页接收进度；关闭页面仅保留已完成分段。请保持发送端继续播放。</small>
+          <small>虚线仅供取景参考，无需精确对齐。暂停保留本页接收进度；关闭页面仅保留已完成分段。请保持发送端继续播放。</small>
         </div>
         <div id="result"></div>
 

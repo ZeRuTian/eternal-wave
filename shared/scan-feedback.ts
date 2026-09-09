@@ -1,3 +1,5 @@
+import { parseFrame } from "./ew-protocol";
+
 /** Geometry is in source-video pixels, never CSS pixels. */
 export interface Point { x: number; y: number }
 export interface ScanPosition { topLeft: Point; topRight: Point; bottomRight: Point; bottomLeft: Point }
@@ -8,6 +10,54 @@ export interface ScanReport {
   position?: ScanPosition;
   elapsedMs?: number;
   region?: ScanRegion;
+}
+
+/** Never steer capture using failed QR candidates or unrelated QR codes. */
+export function trustedScanPosition(report: ScanReport, width: number, height: number): ScanPosition | null {
+  if (!report.bytes || !parseFrame(report.bytes) || !report.position || width <= 0 || height <= 0) return null;
+  const { topLeft, topRight, bottomRight, bottomLeft } = report.position;
+  const points = [topLeft, topRight, bottomRight, bottomLeft];
+  const region = report.region ?? { x: 0, y: 0, w: width, h: height };
+  if (!Number.isFinite(region.x + region.y + region.w + region.h) ||
+      region.x < 0 || region.y < 0 || region.w <= 0 || region.h <= 0 ||
+      region.x + region.w > width || region.y + region.h > height) return null;
+  if (points.some(p => !p || !Number.isFinite(p.x) || !Number.isFinite(p.y) ||
+      p.x < 0 || p.y < 0 || p.x > region.w || p.y > region.h)) return null;
+  // Explicit corner order: object enumeration order is not a polygon winding.
+  const edges = points.map((p, i) => ({ x: points[(i + 1) % 4]!.x - p.x, y: points[(i + 1) % 4]!.y - p.y }));
+  const lengths = edges.map(p => Math.hypot(p.x, p.y));
+  if (Math.min(...lengths) < 16 || Math.max(...lengths) / Math.min(...lengths) > 4) return null;
+  const crosses = edges.map((p, i) => p.x * edges[(i + 1) % 4]!.y - p.y * edges[(i + 1) % 4]!.x);
+  if (!crosses.every(n => n > 0) && !crosses.every(n => n < 0)) return null;
+  const area = Math.abs(points.reduce((sum, p, i) => {
+    const next = points[(i + 1) % 4]!;
+    return sum + p.x * next.y - p.y * next.x;
+  }, 0)) / 2;
+  const box = bounds(report.position);
+  if (area < box.w * box.h * 0.2) return null;
+  const shift = (p: Point): Point => ({ x: p.x + region.x, y: p.y + region.y });
+  return { topLeft: shift(topLeft), topRight: shift(topRight), bottomRight: shift(bottomRight), bottomLeft: shift(bottomLeft) };
+}
+
+/** Three misses release the ROI promptly; old/out-of-order replies cannot relock it. */
+export class ScanTracker {
+  position: ScanPosition | null = null;
+  at = -Infinity;
+  private lastId = -1;
+  private misses = 0;
+  reset(): void { this.position = null; this.at = -Infinity; this.lastId = -1; this.misses = 0; }
+  update(report: ScanReport, width: number, height: number, now: number): void {
+    if (report.id <= this.lastId) return;
+    this.lastId = report.id;
+    const position = trustedScanPosition(report, width, height);
+    if (!position) {
+      if (++this.misses >= 3) this.position = null;
+      return;
+    }
+    this.misses = 0;
+    this.position = position;
+    this.at = now;
+  }
 }
 
 export function bounds(position: ScanPosition): ScanRegion {
@@ -25,16 +75,6 @@ export function scanRegion(position: ScanPosition, width: number, height: number
   const y = Math.max(0, Math.floor(b.y - margin));
   return { x, y, w: Math.min(width, Math.ceil(b.x + b.w + margin)) - x,
     h: Math.min(height, Math.ceil(b.y + b.h + margin)) - y };
-}
-
-export function positionHint(position: ScanPosition, width: number, height: number): string {
-  const b = bounds(position);
-  const edge = Math.min(width, height) * 0.025;
-  if (b.x < edge || b.y < edge || b.x + b.w > width - edge || b.y + b.h > height - edge)
-    return "二维码接近画面边缘，请稍微远离并保留完整白边";
-  if (Math.min(b.w, b.h) / Math.min(width, height) < 0.45)
-    return "二维码偏小，可稍微靠近，或放大发送端二维码";
-  return "二维码已定位，保持完整白边，正在检测接收质量";
 }
 
 /** Bounded rolling counter; resets on pause/session change and stops estimating on silence. */

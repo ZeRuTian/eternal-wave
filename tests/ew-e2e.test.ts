@@ -10,7 +10,7 @@ import { EwReceiver } from "../shared/ew-receiver.ts";
 import { MemoryBackend } from "./memory-backend.ts";
 import { prepareTransfer, frameStream, sessionSeed } from "../shared/ew-sender.ts";
 import { sha256Once } from "../shared/ew-sha256.ts";
-import { SEGMENT_SIZE } from "../shared/ew-protocol.ts";
+import { SEGMENT_SIZE, FRAME_TYPE_DATA, parseFrame } from "../shared/ew-protocol.ts";
 
 /** 确定性伪随机（测试内固定种子，不依赖 Math.random）。 */
 function mulberry32(seed: number): () => number {
@@ -39,7 +39,7 @@ async function runLink(
     limit?: number; // 最多取多少帧（0=无限）
     seed?: number;
   } = {},
-): Promise<{ backend: MemoryBackend; framesUsed: number; receiver: EwReceiver }> {
+): Promise<{ backend: MemoryBackend; framesUsed: number; receiver: EwReceiver; firstSegmentFrames: number }> {
   const rnd = mulberry32(opts.seed ?? 42);
   const prepared = await prepareTransfer({
     name: opts.name ?? "e2e.bin",
@@ -60,6 +60,8 @@ async function runLink(
 
   const gen = frameStream(prepared);
   let framesUsed = 0;
+  let firstSegmentFrames = 0;
+  let visitedSecondSegment = false;
   const maxFrames = opts.limit ?? 0;
   const dropRate = opts.dropRate ?? 0.3;
   const dupRate = opts.dupRate ?? 0.1;
@@ -72,6 +74,11 @@ async function runLink(
     const frame = await gen.next();
     if (frame.done) break;
     const f = frame.value as Uint8Array;
+    const parsed = parseFrame(f);
+    if (parsed?.header.frameType === FRAME_TYPE_DATA) {
+      if (parsed.header.segmentIndex > 0) visitedSecondSegment = true;
+      else if (!visitedSecondSegment) firstSegmentFrames++;
+    }
     if (rnd() < dropRate) continue; // 丢帧
     if (collect) {
       collect.push(f);
@@ -103,7 +110,7 @@ async function runLink(
     }
   }
   await new Promise((r) => setTimeout(r, 20)); // 等待异步 finish
-  return { backend, framesUsed, receiver };
+  return { backend, framesUsed, receiver, firstSegmentFrames };
 }
 
 test("1 字节文件：普通链路", async () => {
@@ -383,15 +390,14 @@ test("低帧率/小帧字节配置（500B/帧）也正确", async () => {
   assert.deepEqual(backend.parts.get(0), bytes);
 });
 
-test("高速模式（冗余 1.2）：干净信道多段传输帧数显著少于稳健模式", async () => {
-  // 多段（8 MiB = 2 段）+ 禁用 gzip 的确定性数据：coverage 差异在每段
-  // 的冗余浪费上体现——高速 1.2 一轮收满后浪费少，稳健 1.35 每段多发
-  // ~0.15k 帧。单段/可压缩场景 k 太小或收满即止，无法体现差异。
-  // 用确定性数据（非随机），保证帧数断言稳定可重复。
+test("两种模式都能完整恢复，首段轮播预算严格遵循各自冗余配置", async () => {
+  // 固定数据/信道 seed 不固定随机 transferId 对应的喷泉方程。
+  // 总完成帧数不能保证高速总是更少：少量方程缺失会等到下一轮。
+  // 分别验证确定的调度预算与完整字节恢复，不用随机测速作正确性门槛。
   const bytes = new Uint8Array(8 * 1024 * 1024);
   for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 13 + 5) % 251;
   // 干净信道：0 丢帧 0 重复（屏幕捕获近似场景）
-  const { receiver, framesUsed: fastFrames } = await runLink(bytes, {
+  const { receiver, backend: fastBackend, firstSegmentFrames: fastFrames } = await runLink(bytes, {
     coverage: 1.2,
     dropRate: 0,
     dupRate: 0,
@@ -399,7 +405,7 @@ test("高速模式（冗余 1.2）：干净信道多段传输帧数显著少于�
     seed: 11,
   });
   assert.ok(receiver.isDone, "高速模式在干净信道应收满");
-  const { receiver: robust, framesUsed: robustFrames } = await runLink(bytes, {
+  const { receiver: robust, backend: robustBackend, firstSegmentFrames: robustFrames } = await runLink(bytes, {
     coverage: 1.35,
     dropRate: 0,
     dupRate: 0,
@@ -407,13 +413,13 @@ test("高速模式（冗余 1.2）：干净信道多段传输帧数显著少于�
     seed: 11,
   });
   assert.ok(robust.isDone);
-  // 高速应显著少于稳健：同一数据、同一 seed，差异 = 每段冗余浪费差
-  assert.ok(fastFrames < robustFrames, `高速 ${fastFrames} 帧 < 稳健 ${robustFrames} 帧`);
-  const ratio = fastFrames / robustFrames;
-  assert.ok(
-    ratio < 0.95,
-    `高速帧数应比稳健少 5% 以上（实际比例 ${ratio.toFixed(3)}：${fastFrames}/${robustFrames}）`,
-  );
+  const k = Math.ceil(SEGMENT_SIZE / (2331 - 48));
+  assert.equal(fastFrames, Math.ceil(1.2 * k));
+  assert.equal(robustFrames, Math.ceil(1.35 * k));
+  for (const backend of [fastBackend, robustBackend]) {
+    assert.deepEqual(backend.parts.get(0), bytes.subarray(0, SEGMENT_SIZE));
+    assert.deepEqual(backend.parts.get(1), bytes.subarray(SEGMENT_SIZE));
+  }
 });
 
 test("高速模式（冗余 1.2）：5% 轻丢帧仍可完成（覆盖常见屏幕捕获抖动）", async () => {
