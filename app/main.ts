@@ -347,8 +347,12 @@ for (const el of ["cfg-fps", "cfg-ecc"]) {
 document.getElementById("cfg-size")!.addEventListener("input", () => resizeDisplay?.());
 const preset = document.getElementById("cfg-preset") as HTMLSelectElement;
 preset.addEventListener("change", () => {
+  if (preset.value === "custom") {
+    (document.getElementById("send-settings") as HTMLDetailsElement).open = true;
+    return;
+  }
   const profiles: Record<string, [string, string, string]> = {
-    camera: ["30", "2331", "robust"], easy: ["24", "1465", "robust"], screen: ["60", "2953", "fast"],
+    camera: ["30", "2331", "robust"], screen: ["60", "2953", "fast"],
   };
   const values = profiles[preset.value];
   if (!values) return;
@@ -1213,7 +1217,7 @@ function refreshProgress(): void {
   } else if (!r.hasManifest && !signalLost) {
     scanHint.textContent = "已找到传输二维码，正在等待文件信息，请保持对准";
   } else if (located && signalLost) {
-    scanHint.textContent = positionHint(lastPosition!, video.videoWidth, video.videoHeight) + "；若一直无法读取，请检查对焦或使用大码低速预设";
+    scanHint.textContent = positionHint(lastPosition!, video.videoWidth, video.videoHeight) + "；若一直无法读取，请检查对焦，或在发送端自定义设置中降低帧率和每帧字节数";
   } else if (signalLost) {
     scanHint.textContent = r.hasManifest ? "信号中断，请将完整二维码和白边重新放入框内；已收分段保留"
       : "将整个二维码和白边放入框内，保持清晰；看不清时放大发送端二维码";

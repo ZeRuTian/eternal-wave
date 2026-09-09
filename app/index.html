@@ -59,17 +59,16 @@
 
       <div class="stage" id="stage" hidden><canvas id="qr" width="16" height="16"></canvas></div>
 
-      <label class="transfer-preset">接收方式
+      <label class="transfer-preset">传输预设
         <select id="cfg-preset">
-          <option value="camera" selected>手机摄像头 · 稳定优先</option>
-          <option value="easy">难以对准 · 大码低速</option>
-          <option value="screen">电脑屏幕捕获 · 高速</option>
+          <option value="camera" selected>手机扫码</option>
+          <option value="screen">屏幕捕获</option>
           <option value="custom">自定义</option>
         </select>
-        <small>先选择接收方式再选文件；传输中更改预设会重新开始。</small>
+        <small>选择自定义可调整下方参数；传输中切换预设或修改编码参数会重新开始。</small>
       </label>
 
-      <details class="settings">
+      <details class="settings" id="send-settings">
         <summary>传输设置</summary>
         <div class="row">
           <label>
