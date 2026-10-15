@@ -15,6 +15,26 @@ export interface ScanReport {
   engine?: "tracked" | "full" | "compat";
 }
 
+/** Match physical tiles, not payloads: startup tiles may carry identical manifests. */
+export function sameScanPosition(a: ScanPosition, b: ScanPosition): boolean {
+  const x = bounds(a), y = bounds(b);
+  const intersection = Math.max(0, Math.min(x.x + x.w, y.x + y.w) - Math.max(x.x, y.x)) *
+    Math.max(0, Math.min(x.y + x.h, y.y + y.h) - Math.max(x.y, y.y));
+  return intersection / Math.max(1, x.w * x.h + y.w * y.h - intersection) >= 0.3;
+}
+
+/** Prefer freshly reacquired geometry while preserving independently decoded tiles. */
+export function mergeScanSymbols(fresh: ScanSymbol[], tracked: ScanSymbol[]): ScanSymbol[] {
+  const result = fresh.slice(0, 4);
+  for (const symbol of tracked) {
+    const exists = result.some(other => symbol.position && other.position
+      ? sameScanPosition(symbol.position, other.position)
+      : symbol.bytes.length === other.bytes.length && symbol.bytes.every((n, i) => n === other.bytes[i]));
+    if (!exists && result.length < 4) result.push(symbol);
+  }
+  return result;
+}
+
 /** A report describes the whole captured group. Only CRC-valid EW symbols may
  * seed tracking. Full searches periodically discover new tiles; stale replies
  * must never replace a newer group. */
@@ -23,18 +43,34 @@ export class MultiScanTracker {
   at = -Infinity;
   private lastId = -1;
   private misses = 0;
-  reset(): void { this.symbols = []; this.at = -Infinity; this.lastId = -1; this.misses = 0; }
+  private tracks: { position: ScanPosition; modules: number; seenAt: number }[] = [];
+  private dimensions = "";
+  reset(): void { this.symbols = []; this.tracks = []; this.at = -Infinity; this.lastId = -1; this.misses = 0; this.dimensions = ""; }
   update(report: ScanReport, width: number, height: number, now: number): void {
     if (report.id <= this.lastId) return;
     this.lastId = report.id;
+    const dimensions = `${width}x${height}`;
+    if (this.dimensions !== dimensions) { this.tracks = []; this.symbols = []; }
+    this.dimensions = dimensions;
     const symbols = report.symbols ?? (report.bytes ? [{ bytes: report.bytes, position: report.position }] : []);
     const valid = symbols.slice(0, 4).flatMap(s => {
       const position = trustedScanPosition({ ...report, ...s }, width, height);
       const modules = s.modules ?? 0;
       return position ? [{ position, modules: modules >= 21 && modules <= 177 && (modules - 17) % 4 === 0 ? modules : 0 }] : [];
     });
-    if (!valid.length) { if (++this.misses >= 3) this.symbols = []; return; }
-    this.symbols = valid;
+    // Keep only previously CRC-validated geometry, for at most 650 ms after
+    // that tile's last success. Other tiles cannot extend its lifetime.
+    const previous = this.tracks.filter(t => now - t.seenAt <= 650);
+    if (!valid.length) {
+      this.tracks = ++this.misses >= 3 ? [] : previous;
+      this.symbols = this.tracks;
+      return;
+    }
+    this.tracks = valid.map(s => ({ ...s, seenAt: now }));
+    for (const old of previous) {
+      if (this.tracks.length < 4 && !this.tracks.some(s => sameScanPosition(s.position, old.position))) this.tracks.push(old);
+    }
+    this.symbols = this.tracks;
     this.at = now;
     this.misses = 0;
   }

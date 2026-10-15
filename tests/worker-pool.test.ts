@@ -39,6 +39,30 @@ function harness() {
 
 const frame = (n: number) => new Uint8Array([n]);
 
+test("automatic shrink drains the retiring slot and still delivers its decoded frame", () => {
+  const { pool, created, decoded } = harness();
+  pool.resize(2);
+  pool.submit({}, []); pool.submit({}, []);
+  assert.equal(pool.resizeWhenIdle(1), false);
+  assert.equal(created[1]!.terminated, false);
+  created[1]!.reply(frame(7));
+  assert.deepEqual(decoded.map(b => b[0]), [7]);
+  assert.equal(pool.size, 1);
+  assert.equal(created[1]!.terminated, true);
+  created[0]!.reply(frame(8));
+  assert.deepEqual(decoded.map(b => b[0]), [7, 8]);
+});
+
+test("manual stop cancels a pending automatic shrink", () => {
+  const { pool, created } = harness();
+  pool.resize(2);
+  pool.submit({}, []); pool.submit({}, []);
+  pool.resizeWhenIdle(1);
+  pool.resize(0);
+  created[1]!.reply(frame(1));
+  assert.equal(pool.size, 0);
+});
+
 test("a multi-code report delivers every symbol once and releases the slot", () => {
   const { pool, created, decoded } = harness();
   pool.resize(1);

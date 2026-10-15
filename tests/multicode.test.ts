@@ -95,6 +95,37 @@ test("multi tracker ignores failed candidates, old replies and clears after thre
   assert.equal(tracker.symbols.length, 0);
 });
 
+test("four-code optical transfer survives a temporarily obscured tile and still restores the complete file", async () => {
+  const original=Uint8Array.from({length:80000},(_,i)=>(i*73+(i>>>4))&255);
+  const prepared=await prepareTransfer({name:"obscured.bin",mime:"application/octet-stream",bytes:original,frameBytes:1000,allowGzip:false});
+  const stream=frameStream(prepared);
+  const version=QRCode.create([{data:new Uint8Array(1000),mode:"byte"} as any],{errorCorrectionLevel:"L"}).version;
+  const decoder=new TrackedDecoder(codec),tracker=new MultiScanTracker(),backend=new MemoryBackend();
+  const receiver=new EwReceiver();await receiver.attachBackend(backend);
+  let partialFrames=0,recoveredFrames=0;
+  try {
+    for(let frame=0;frame<120&&!receiver.isDone;frame++) {
+      const packets=[];for(let i=0;i<4;i++)packets.push((await stream.next()).value!);
+      const raster=encodeBatch({packets,version,ecc:"L",frame});
+      const image=enlarge(raster);
+      const obscured=frame>=3&&frame<=10;
+      if(obscured) {
+        const tile=raster.width/2*3,pixels=new Uint32Array(image.pixels.buffer);
+        for(let y=20;y<20+tile;y++)pixels.fill(0xffffffff,y*image.width+20+tile,y*image.width+20+2*tile);
+      }
+      const decoded=decoder.decode(image.pixels,image.width,image.height,tracker.symbols,frame*33);
+      assert.equal(decoded.symbols.length,obscured?3:4);
+      if(obscured)partialFrames++;if(frame>10&&decoded.symbols.length===4)recoveredFrames++;
+      tracker.update({id:frame,bytes:null,...decoded},image.width,image.height,frame*33);
+      for(const symbol of decoded.symbols)receiver.handleFrame(symbol.bytes);
+      await new Promise(r=>setTimeout(r,0));
+    }
+    assert.ok(partialFrames>0&&recoveredFrames>0);
+    assert.ok(receiver.isDone);
+    assert.deepEqual(backend.parts.get(0),original);
+  } finally {decoder.dispose();}
+});
+
 for (const frameBytes of [2331, 2953]) test(`dense four-code ${frameBytes} byte full/tracked parity`, async () => {
   const prepared = await prepareTransfer({name:"dense.bin",bytes:Uint8Array.from({length:16000},(_,i)=>i%251),allowGzip:false,frameBytes});
   const stream = frameStream(prepared);

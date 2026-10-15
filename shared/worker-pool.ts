@@ -19,6 +19,7 @@ import type { ScanReport } from "./scan-feedback";
 export class DecodeWorkerPool {
   private readonly workers: PoolWorker[] = [];
   private readonly busy: boolean[] = [];
+  private pendingSize: number | null = null;
 
   constructor(
     private readonly create: () => PoolWorker,
@@ -37,6 +38,7 @@ export class DecodeWorkerPool {
   /** Grow or shrink in place. Terminating a busy worker just drops the frame it
    *  held, which the fountain absorbs like any other miss. */
   resize(count: number): void {
+    this.pendingSize = null;
     while (this.workers.length > Math.max(0, count)) {
       this.workers.pop()!.terminate();
       this.busy.pop();
@@ -53,10 +55,23 @@ export class DecodeWorkerPool {
         const symbols = (event.data as ScanReport).symbols;
         if (symbols) { for (const symbol of symbols) this.onDecoded(symbol.bytes); }
         else if (bytes) this.onDecoded(bytes);
+        if (this.pendingSize !== null) this.resizeWhenIdle(this.pendingSize);
       };
       this.workers.push(worker);
       this.busy.push(false);
     }
+  }
+
+  /** Automatic tuning must never terminate an in-flight decode. Manual stop
+   * and explicit settings still use resize() for immediate cancellation. */
+  resizeWhenIdle(count: number): boolean {
+    count = Math.max(0, Math.floor(count));
+    if (count < this.size && this.busy.slice(count).some(Boolean)) {
+      this.pendingSize = count;
+      return false;
+    }
+    this.resize(count);
+    return true;
   }
 
   /** Hand a frame to a free worker. False when every worker is busy — the

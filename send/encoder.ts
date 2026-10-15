@@ -5,7 +5,9 @@ import type { EncodeBatch, encodeBatch } from "./encode";
 export class QrEncoder {
   private worker = createEncodeWorker();
   private reject: ((error: Error) => void) | null = null;
+  private disposed = false;
   encode(batch: EncodeBatch): Promise<ReturnType<typeof encodeBatch>> {
+    if (this.disposed) return Promise.reject(new Error("发送已停止"));
     if (this.reject) return Promise.reject(new Error("Encoder already busy"));
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => fail(new Error("二维码生成超时，请停止后重试")), 15000);
@@ -21,5 +23,5 @@ export class QrEncoder {
       this.worker.postMessage(batch);
     });
   }
-  dispose(): void { this.worker.terminate(); this.reject?.(new Error("发送已停止")); }
+  dispose(): void { this.disposed = true; this.worker.terminate(); this.reject?.(new Error("发送已停止")); }
 }
