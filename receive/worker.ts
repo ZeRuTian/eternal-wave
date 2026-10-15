@@ -6,6 +6,13 @@
 import wasmUrl from "./wasm-url";
 import { prepareZXingModule, readBarcodes } from "zxing-wasm/reader";
 import type { ScanRegion } from "../shared/scan-feedback";
+import DecimenCodec from "../vendor/decimen-codec/decimen_codec";
+import codecWasmUrl from "./codec-wasm-url";
+import { TrackedDecoder, type TrackingSeed } from "./tracked-decoder";
+
+const decoder = DecimenCodec({ locateFile: path => path.endsWith(".wasm") ? codecWasmUrl : path })
+  .then(module => new TrackedDecoder(module)).catch(() => null);
+let codecFailed = false;
 
 prepareZXingModule({
   overrides: {
@@ -20,18 +27,36 @@ const ctx = self as unknown as {
 };
 
 ctx.onmessage = async (e: MessageEvent) => {
-  const { id, buf, w, h, region, fast } = e.data as {
+  const { id, buf, w, h, region, fast, seeds, compatibility } = e.data as {
     id: number; buf: ArrayBuffer; w: number; h: number; region?: ScanRegion; fast?: boolean;
+    seeds?: TrackingSeed[]; compatibility?: boolean;
   };
   const start = performance.now();
   try {
     const img = new ImageData(new Uint8ClampedArray(buf), w, h);
+    if (!compatibility && !codecFailed) {
+      const engine = await decoder;
+      if (engine) {
+        try {
+          const decoded = engine.decode(img.data, w, h, seeds);
+          if (decoded.symbols.length) {
+            ctx.postMessage({ id, bytes: null, ...decoded, region, elapsedMs: performance.now() - start });
+            return;
+          }
+        } catch {
+          // A failed WASM instance must not hold the worker slot or break receive.
+          codecFailed = true;
+          engine.dispose();
+        }
+      }
+    }
     const results = await readBarcodes(img, {
-      formats: ["QRCode"], maxNumberOfSymbols: 1, tryHarder: !fast,
+      formats: ["QRCode"], maxNumberOfSymbols: 4, tryHarder: !fast,
       tryInvert: !fast, tryDownscale: !fast, returnErrors: false,
     });
-    const r = results.find((x) => x.isValid && x.bytes.length > 0);
-    ctx.postMessage({ id, bytes: r ? r.bytes : null, position: r?.position,
+    const symbols = results.filter(x => x.isValid && x.bytes.length > 0)
+      .map(r => ({ bytes: r.bytes, position: r.position }));
+    ctx.postMessage({ id, bytes: null, symbols, engine: "compat",
       region, elapsedMs: performance.now() - start });
   } catch {
     ctx.postMessage({ id, bytes: null, region, elapsedMs: performance.now() - start });

@@ -12,7 +12,7 @@ const images: string[] = [];
 for (let i = 0; i < 70; i++) {
   const { value } = await frames.next();
   images.push(await QRCode.toDataURL([{ data: value!, mode: "byte" } as unknown as QRCode.QRCodeSegment],
-    { width: 600, margin: 4, errorCorrectionLevel: "L" }));
+    { width: 600, margin: 4, errorCorrectionLevel: "L", version: 22 }));
 }
 mkdirSync("artifacts/mobile", { recursive: true });
 writeFileSync("artifacts/mobile/frames.json", JSON.stringify(images));

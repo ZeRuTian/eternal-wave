@@ -7,8 +7,9 @@
 // 摄像头调度，但协议/分段/加密/续传全部走 ew-* 核心。
 
 import QRCode from "qrcode";
-import { fitQrDisplaySize } from "../shared/display";
-import { rasterizeQr } from "../shared/qr-raster";
+import { fitQrGrid, qrCount, qrGrid } from "../shared/qr-layout";
+import { QrEncoder } from "../send/encoder";
+import { decodeWorkerBudget } from "../shared/decode-budget";
 import { formatBytes } from "../shared/format";
 // 解码 worker：通过 worker-factory 创建。standalone 构建时 useInlineVariants
 // 插件会在 resolve 时换成 worker-factory.inline.ts（base64 blob URL，file:// 可用）。
@@ -18,7 +19,7 @@ import { probeCameraCapabilities, applyAdvancedConstraint, isIOS } from "../shar
 import { requestScreenWakeLock, releaseScreenWakeLock } from "../shared/wake-lock";
 import { statusLine } from "../shared/status-line";
 import { formatDuration } from "../shared/progress";
-import { ReceiveRate, ScanTracker, scanRegion, type ScanReport } from "../shared/scan-feedback";
+import { ReceiveRate, MultiScanTracker, type ScanReport, type ScanPosition } from "../shared/scan-feedback";
 import { parseFrame } from "../shared/ew-protocol";
 import { EwReceiver } from "../shared/ew-receiver";
 import {
@@ -53,6 +54,7 @@ function showPane(pane: "send" | "receive"): void {
   if (currentPane === pane) return;
   if (currentPane === "send") {
     generation++;
+    encoder?.dispose();
     releaseScreenWakeLock();
     setStageFullscreen(false);
   } else if (currentPane === "receive") {
@@ -92,6 +94,8 @@ let selectedFile: {
 } | null = null;
 let generation = 0;
 let resizeDisplay: (() => void) | null = null;
+let encoder: QrEncoder | null = null;
+window.addEventListener("resize", () => resizeDisplay?.());
 
 const { setStatus, showError } = statusLine(specs);
 
@@ -122,6 +126,7 @@ function updateFilePicker(): void {
 }
 
 function stopTransfer(): void {
+  encoder?.dispose();
   releaseScreenWakeLock();
   generation++;
   selectedFile = null;
@@ -165,6 +170,7 @@ cfgFile.addEventListener("change", () => void selectFile());
 
 async function prepareSelectedFile(revealStage = false): Promise<void> {
   if (!selectedFile) return;
+  encoder?.dispose();
   const current = selectedFile;
   const gen = ++generation;
   current.prepared = null;
@@ -197,6 +203,7 @@ async function prepareSelectedFile(revealStage = false): Promise<void> {
 
 async function startStream(revealStage = false): Promise<void> {
   const gen = ++generation;
+  encoder?.dispose();
   resizeDisplay = null;
   showStreamPanels(false);
   if (!selectedFile?.prepared) {
@@ -209,6 +216,8 @@ async function startStream(revealStage = false): Promise<void> {
   const fileSize = file.size;
   if (gen !== generation) return;
   const txFps = Number((document.getElementById("cfg-fps") as HTMLSelectElement).value);
+  const count = qrCount(Number((document.getElementById("cfg-layout") as HTMLSelectElement).value));
+  const grid = qrGrid(count);
   const frameBytes = prepared.blockLen + 48;
   void requestScreenWakeLock();
   const ecc = (document.getElementById("cfg-ecc") as HTMLSelectElement).value as "L" | "M" | "Q" | "H";
@@ -235,10 +244,18 @@ async function startStream(revealStage = false): Promise<void> {
     return;
   }
   const version = probe.version;
+  let currentEncoder: QrEncoder;
+  try { currentEncoder = new QrEncoder(); }
+  catch (error) {
+    stage.hidden = true;
+    releaseScreenWakeLock();
+    showError(`无法启动二维码生成线程：${errMsg(error)}`);
+    return;
+  }
+  encoder = currentEncoder;
   const modules = probe.modules.size;
   let announced = false;
   let renderedFrameIndex = 0;
-  let scale = 1;
   const staging = document.createElement("canvas");
   const queue: ImageData[] = [];
   stage.hidden = false;
@@ -247,46 +264,45 @@ async function startStream(revealStage = false): Promise<void> {
     const displayPx = Number((document.getElementById("cfg-size") as HTMLInputElement).value);
     const dpr = window.devicePixelRatio || 1;
     const total = modules + 2 * MARGIN;
-    let cssBudget: number;
+    let budgetW: number, budgetH: number;
     if (document.body.classList.contains("qr-full")) {
-      cssBudget = Math.min(window.innerWidth, window.innerHeight);
+      budgetW = window.innerWidth;
+      budgetH = window.innerHeight;
     } else {
       const containerWidth = stage.parentElement?.getBoundingClientRect().width ?? window.innerWidth;
-      cssBudget = fitQrDisplaySize(window.innerWidth, window.innerHeight, containerWidth, displayPx);
+      const style = getComputedStyle(stage);
+      const padding = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+      budgetW = Math.max(1, Math.min(window.innerWidth * 0.94, containerWidth - padding, displayPx));
+      budgetH = window.innerHeight * 0.8;
     }
-    scale = Math.max(1, Math.floor((cssBudget * dpr) / total));
-    staging.width = total;
-    staging.height = total;
-    canvas.width = total * scale;
-    canvas.height = total * scale;
-    canvas.style.width = `${(total * scale) / dpr}px`;
-    canvas.style.height = `${(total * scale) / dpr}px`;
+    staging.width = total * grid.cols;
+    staging.height = total * grid.rows;
+    const size = fitQrGrid(staging.width, staging.height, budgetW, budgetH, dpr);
+    canvas.width = size.width;
+    canvas.height = size.height;
+    canvas.style.width = `${size.cssWidth}px`;
+    canvas.style.height = `${size.cssHeight}px`;
   };
   sizeCanvas();
   resizeDisplay = sizeCanvas;
 
   const makeFrame = async (): Promise<ImageData> => {
-    const next = await stream.next();
-    if (next.done || !next.value) throw new Error("发送帧流意外结束");
-    const bytes = next.value;
-    // K=1 的小文件每个喷泉块内容相同，只有帧头 seq 在变化。固定 QR mask
-    // 时肉眼几乎看不出动态，用户也难以判断手机 Safari 的 rAF 是否仍在运行。
-    // 在两个合法 mask 间交替，不改协议字节。每个 mask 保持 4 帧，30 fps
-    // 下约 7.5 Hz：肉眼能明确看见闪动，摄像头也有足够时间捕获完整图案。
-    const maskPattern = Math.floor(renderedFrameIndex++ / 4) % 2 === 0 ? 4 : 6;
-    const qr = QRCode.create([{ data: bytes, mode: "byte" } as unknown as QRCode.QRCodeSegment], {
-      errorCorrectionLevel: ecc,
-      version,
-      maskPattern,
-    });
+    const packets: Uint8Array[] = [];
+    for (let i = 0; i < count; i++) {
+      const next = await stream.next();
+      if (next.done || !next.value) throw new Error("发送帧流意外结束");
+      packets.push(next.value);
+    }
+    const image = await currentEncoder.encode({ packets, version, ecc, frame: renderedFrameIndex++ });
+    if (gen !== generation) throw new Error("发送已停止");
     if (!announced) {
       announced = true;
       if (revealStage) {
         stage.scrollIntoView({ behavior: "auto", block: "start" });
       }
       spec("spec-fps").textContent = `${txFps} fps`;
-      spec("spec-frame").textContent = `${frameBytes} 字节`;
-      spec("spec-qr").textContent = `V${qr.version} · ECC ${ecc} · 动态掩码`;
+      spec("spec-frame").textContent = `${frameBytes} 字节/码 × ${count} 码`;
+      spec("spec-qr").textContent = `V${version} · ECC ${ecc} · 动态掩码`;
       spec("spec-payload").textContent = `${name} · ${formatBytes(fileSize)}`;
       spec("spec-compression").textContent = prepared.manifest.allowGzip ? "按段自动（仅缩小时）" : "—";
       spec("spec-mode").textContent = prepared.coverage < 1.3 ? "高速（冗余 1.2）" : "稳健（冗余 1.35）";
@@ -295,8 +311,7 @@ async function startStream(revealStage = false): Promise<void> {
       showStreamPanels(true);
       setStatus(`正在发送 ${name} — ${prepared.manifest.encrypted ? "已加密 · " : ""}等待接收端扫描`);
     }
-    const raster = rasterizeQr(qr.modules.size, qr.modules.data, MARGIN);
-    return new ImageData(new Uint8ClampedArray(raster.pixels.buffer), raster.size, raster.size);
+    return new ImageData(new Uint8ClampedArray(image.pixels.buffer), image.width, image.height);
   };
 
   let generatorFailed = false;
@@ -311,7 +326,10 @@ async function startStream(revealStage = false): Promise<void> {
         queue.push(image);
       }
     } catch (err) {
+      if (gen !== generation) return;
       generatorFailed = true;
+      currentEncoder.dispose();
+      releaseScreenWakeLock();
       showError(errMsg(err));
     } finally {
       pumping = false;
@@ -321,6 +339,8 @@ async function startStream(revealStage = false): Promise<void> {
 
   const interval = 1000 / txFps;
   let nextAt = performance.now();
+  let measuredAt = nextAt;
+  let displayed = 0;
   const tick = (now: number) => {
     if (gen !== generation || generatorFailed) return;
     requestAnimationFrame(tick);
@@ -335,13 +355,19 @@ async function startStream(revealStage = false): Promise<void> {
     const ctx = canvas.getContext("2d")!;
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(staging, 0, 0, canvas.width, canvas.height);
+    displayed++;
+    if (now - measuredAt >= 1000) {
+      spec("spec-fps").textContent = `实际 ${(displayed * 1000 / (now - measuredAt)).toFixed(1)} / 目标 ${txFps} fps · ${count} 码`;
+      displayed = 0;
+      measuredAt = now;
+    }
     nextAt += interval;
     if (now - nextAt > 3 * interval) nextAt = now + interval;
   };
   requestAnimationFrame(tick);
 }
 
-for (const el of ["cfg-fps", "cfg-ecc"]) {
+for (const el of ["cfg-fps", "cfg-ecc", "cfg-layout"]) {
   document.getElementById(el)!.addEventListener("change", () => void startStream());
 }
 document.getElementById("cfg-size")!.addEventListener("input", () => resizeDisplay?.());
@@ -410,7 +436,12 @@ const liveEta = document.getElementById("live-eta")!;
 const pauseBtn = document.getElementById("pause-receive") as HTMLButtonElement;
 const scanOverlay = document.getElementById("scan-overlay")!;
 const receiveRate = new ReceiveRate();
-const scanTracker = new ScanTracker();
+const scanTracker = new MultiScanTracker();
+const cfgDecoder = document.getElementById("cfg-decoder") as HTMLSelectElement;
+let decodeEngine = "等待信号";
+let decodeAverage = 0;
+let workerAdjustedAt = 0;
+let autoWorkers = 2;
 let paused = false;
 let pausedAt = 0;
 let pausedByVisibility = false;
@@ -534,15 +565,17 @@ const MAX_WORKERS = Math.max(1, Math.min(HARDWARE_CONCURRENCY - 1, 5));
 function populateWorkerChoices(): void {
   cfgWorkers.textContent = "";
   const recommend = currentSource() === "screen" ? Math.min(MAX_WORKERS + 1, 5) : Math.min(MAX_WORKERS, 2);
+  autoWorkers = Math.min(MAX_WORKERS, 2);
+  cfgWorkers.add(new Option("自动（按解码耗时调整）", "auto", true, true));
   for (let i = 1; i <= Math.max(MAX_WORKERS, recommend); i++) {
     const opt = document.createElement("option");
     opt.value = String(i);
     opt.textContent = `${i}${i === recommend ? "（推荐）" : ""}`;
-    if (i === recommend) opt.selected = true;
     cfgWorkers.append(opt);
   }
 }
 populateWorkerChoices();
+function workerCount(): number { return cfgWorkers.value === "auto" ? autoWorkers : Number(cfgWorkers.value); }
 
 function updateStartButton(): void {
   startBtn.textContent = currentSource() === "screen" ? "开始屏幕接收" : "开始接收";
@@ -601,6 +634,8 @@ async function start() {
   decodeTimes.length = 0;
   busyDrops = 0;
   decodeMs = 0;
+  decodeAverage = 0;
+  workerAdjustedAt = performance.now();
   scanTracker.reset();
   lastSignalAt = -Infinity;
   lastReportId = -1;
@@ -794,7 +829,7 @@ async function start() {
   }
 
   pool = decodePool();
-  pool.resize(Number(cfgWorkers.value));
+  pool.resize(workerCount());
 
   reportCameraSettings();
   void applyCameraExtras();
@@ -862,6 +897,8 @@ function handleScanReport(report: ScanReport): void {
   if (done || paused || report.id <= lastReportId) return;
   lastReportId = report.id;
   decodeMs = report.elapsedMs ?? 0;
+  decodeAverage = decodeAverage ? decodeAverage * 0.9 + decodeMs * 0.1 : decodeMs;
+  decodeEngine = report.engine === "tracked" ? "跟踪" : report.engine === "full" ? "重新定位" : "兼容";
   scanTracker.update(report, video.videoWidth, video.videoHeight, performance.now());
 }
 
@@ -904,7 +941,7 @@ async function resumeReceiving(): Promise<void> {
     captureTimes.length = decodeTimes.length = 0;
     scanTracker.reset();
     lastSignalAt = -Infinity;
-    pool.resize(Number(cfgWorkers.value));
+    pool.resize(workerCount());
     pauseBtn.textContent = "暂停接收";
     scheduleFrame(++captureGen);
     await requestScreenWakeLock();
@@ -987,7 +1024,7 @@ async function applyCameraExtras(): Promise<void> {
 
 async function applyReceiveSettings(): Promise<void> {
   if (done || paused) return;
-  pool?.resize(Number(cfgWorkers.value));
+  pool?.resize(workerCount());
   const track = stream?.getVideoTracks()[0];
   if (!track) return;
   // 屏幕捕获的分辨率/帧率由系统共享配置决定，不做实时调整
@@ -1034,8 +1071,8 @@ function captureFrame(): void {
   captureTimes.push(now);
   if (pool.busyCount === pool.size) { busyDrops++; return; }
   // Refresh the full-frame search regularly and immediately after a lost lock.
-  const useRegion = scanTracker.position && now - scanTracker.at < 1000 && now - fallbackAt < 1500;
-  const region = useRegion ? scanRegion(scanTracker.position!, vw, vh) : { x: 0, y: 0, w: vw, h: vh };
+  const useRegion = scanTracker.symbols.length > 0 && now - scanTracker.at < 1000 && now - fallbackAt < 1500;
+  const region = useRegion ? scanTracker.region(vw, vh) : { x: 0, y: 0, w: vw, h: vh };
   if (!useRegion) fallbackAt = now;
   if (region.w <= 0 || region.h <= 0) { scanTracker.reset(); return; }
   if (grab.width !== region.w || grab.height !== region.h) {
@@ -1045,7 +1082,11 @@ function captureFrame(): void {
   const ctx = grab.getContext("2d", { willReadFrequently: true })!;
   ctx.drawImage(video, region.x, region.y, region.w, region.h, 0, 0, region.w, region.h);
   const img = ctx.getImageData(0, 0, region.w, region.h);
+  const seeds = useRegion ? scanTracker.symbols.map(s => ({ modules: s.modules,
+    position: Object.fromEntries(Object.entries(s.position).map(([k, p]) =>
+      [k, { x: p.x - region.x, y: p.y - region.y }])) as unknown as ScanPosition })) : [];
   pool.submit({ id: frameId++, buf: img.data.buffer, w: region.w, h: region.h, region,
+    seeds, compatibility: cfgDecoder.value === "compat",
     fast: !!useRegion && now - lastSignalAt < 1000 }, [img.data.buffer]);
 }
 
@@ -1170,11 +1211,19 @@ function refreshProgress(): void {
   const now = performance.now();
   if (paused) return;
   const capFps = trimWindow(captureTimes, now, 2000) / 2;
+  if (cfgWorkers.value === "auto" && decodeAverage > 0 && now - workerAdjustedAt >= 3000 && pool?.size) {
+    autoWorkers = decodeWorkerBudget(decodeAverage, capFps, MAX_WORKERS);
+    // Change by one slot per interval to avoid oscillation and dropping many in-flight images.
+    autoWorkers = pool.size + Math.sign(autoWorkers - pool.size);
+    pool.resize(autoWorkers);
+    workerAdjustedAt = now;
+  }
   const decFps = trimWindow(decodeTimes, now, 2000) / 2;
   document.getElementById("m-cap")!.textContent = capFps.toFixed(1);
   document.getElementById("m-dec")!.textContent = decFps.toFixed(1);
   document.getElementById("m-decode-ms")!.textContent = `${decodeMs.toFixed(0)} ms`;
   document.getElementById("m-busy")!.textContent = String(busyDrops);
+  document.getElementById("m-engine")!.textContent = `${decodeEngine} · ${scanTracker.symbols.length} 码 · ${pool?.size ?? 0} 线程`;
   const r = receiver;
   if (!r) {
     document.getElementById("m-frames")!.textContent = "—";

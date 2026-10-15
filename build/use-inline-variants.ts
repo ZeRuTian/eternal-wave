@@ -15,6 +15,8 @@ export function useInlineVariants(rootDir: string): Plugin {
     name: "use-inline-variants",
     enforce: "pre",
     resolveId(source) {
+      if (source.endsWith("/encode-worker-factory")) return resolve(rootDir, "send/encode-worker-factory.inline.ts");
+      if (source.endsWith("/codec-wasm-url")) return resolve(rootDir, "receive/codec-wasm-url.inline.ts");
       // 按文件名后缀匹配：无论调用方用什么相对路径（./worker-factory、
       // ../receive/worker-factory），都替换为 inline 变体。
       if (source === "./worker-factory" || source.endsWith("/worker-factory")) {

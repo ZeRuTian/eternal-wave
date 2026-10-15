@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+declare module "virtual:codec-wasm-data-url" { const dataUrl: string; export default dataUrl; }
 
 /**
  * Emitted by the `inline-zxing-wasm` plugin in build/inline-zxing-wasm.ts:

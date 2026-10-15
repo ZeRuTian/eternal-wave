@@ -50,7 +50,9 @@ export class DecodeWorkerPool {
         if (id === -1) return; // warm-up ping, no frame attached
         this.busy[slot] = false;
         this.onReport?.(event.data as ScanReport);
-        if (bytes) this.onDecoded(bytes);
+        const symbols = (event.data as ScanReport).symbols;
+        if (symbols) { for (const symbol of symbols) this.onDecoded(symbol.bytes); }
+        else if (bytes) this.onDecoded(bytes);
       };
       this.workers.push(worker);
       this.busy.push(false);

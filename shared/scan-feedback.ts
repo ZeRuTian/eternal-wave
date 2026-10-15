@@ -4,12 +4,47 @@ import { parseFrame } from "./ew-protocol";
 export interface Point { x: number; y: number }
 export interface ScanPosition { topLeft: Point; topRight: Point; bottomRight: Point; bottomLeft: Point }
 export interface ScanRegion { x: number; y: number; w: number; h: number }
+export interface ScanSymbol { bytes: Uint8Array; position?: ScanPosition; modules?: number }
 export interface ScanReport {
   id: number;
   bytes: Uint8Array | null;
   position?: ScanPosition;
   elapsedMs?: number;
   region?: ScanRegion;
+  symbols?: ScanSymbol[];
+  engine?: "tracked" | "full" | "compat";
+}
+
+/** A report describes the whole captured group. Only CRC-valid EW symbols may
+ * seed tracking. Full searches periodically discover new tiles; stale replies
+ * must never replace a newer group. */
+export class MultiScanTracker {
+  symbols: { position: ScanPosition; modules: number }[] = [];
+  at = -Infinity;
+  private lastId = -1;
+  private misses = 0;
+  reset(): void { this.symbols = []; this.at = -Infinity; this.lastId = -1; this.misses = 0; }
+  update(report: ScanReport, width: number, height: number, now: number): void {
+    if (report.id <= this.lastId) return;
+    this.lastId = report.id;
+    const symbols = report.symbols ?? (report.bytes ? [{ bytes: report.bytes, position: report.position }] : []);
+    const valid = symbols.slice(0, 4).flatMap(s => {
+      const position = trustedScanPosition({ ...report, ...s }, width, height);
+      const modules = s.modules ?? 0;
+      return position ? [{ position, modules: modules >= 21 && modules <= 177 && (modules - 17) % 4 === 0 ? modules : 0 }] : [];
+    });
+    if (!valid.length) { if (++this.misses >= 3) this.symbols = []; return; }
+    this.symbols = valid;
+    this.at = now;
+    this.misses = 0;
+  }
+  region(width: number, height: number): ScanRegion {
+    const regions = this.symbols.map(s => scanRegion(s.position, width, height));
+    if (!regions.length) return { x: 0, y: 0, w: width, h: height };
+    const x = Math.min(...regions.map(r => r.x)), y = Math.min(...regions.map(r => r.y));
+    return { x, y, w: Math.max(...regions.map(r => r.x + r.w)) - x,
+      h: Math.max(...regions.map(r => r.y + r.h)) - y };
+  }
 }
 
 /** Never steer capture using failed QR candidates or unrelated QR codes. */

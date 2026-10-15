@@ -8,8 +8,9 @@
 - 可选口令加密：PBKDF2-HMAC-SHA-256(600,000 次) + AES-256-GCM，口令不落盘
 - 接收端支持中断续传（刷新页面后重选同一目录即可恢复）
 - 运行期间零网络请求，不引 CDN、不上传文件、不含遥测
-- 派生自 [Decimen Optical Transfer](https://github.com/bashalarmistalt/decimen-optical-transfer)
-  （MIT，保留作者署名）；协议为独立的 Eternal Wave Protocol v1，与上游不兼容
+- 派生自 [Decimen Optical Transfer](https://github.com/bashalarmistalt/decimen-optical-transfer)，保留原作者署名。
+  v0.5 起集成 AGPL 跟踪解码器，组合项目采用 **AGPL-3.0-or-later**；原 MIT 部分声明保留在 LICENSE-MIT。
+  协议仍为独立的 Eternal Wave Protocol v1，与上游不兼容。
 
 ## 快速开始（桌面）
 
@@ -76,6 +77,21 @@ iPhone 不能从本地 HTML 直接调用摄像头，接收端需提前以 PWA �
 此版本不包含固定接收模式或声音提示。纯光学传输仍受屏幕刷新率、摄像头、反光、对焦和码密度影响，
 没有物理设备实测前不承诺倍速提升；大文件仍可能需要较长时间。
 
+## v0.5 实验提速
+
+- 「二维码布局」可选单码、双码、四码。每个码发送同一文件的不同分片，接收端自动识别，无需设置码数。
+  双码横排，四码 2×2；每个码均保留独立白边。默认仍为单码。
+- 二维码编码移到后台线程，发送队列最多预备 3 张画面；显示实际播放 fps，避免把目标帧率当成实际吞吐。
+- 接收默认使用 decimen-codec 跟踪解码：用上次校验有效的位置直接采样，失败在同一张图上重新定位，
+  再失败回退通用 ZXing。每 1.5 秒重新搜索全画面，避免遗漏新码；失锁时恢复搜索。
+- 「接收设置 → 解码方式 → 兼容模式」可以进行同条件 A/B 对比；默认按实际耗时调整 1–4 个解码线程，
+  每三秒最多增减一个，避免频繁切换；也可手动指定线程数。
+  「传输详情」显示实际解码方式、码数、处理耗时及繁忙丢帧；解码数/秒可以大于摄像头 fps。
+- 先试双码；四码需要屏幕和相机提供足够像素。将所有码与白边一起收入画面，若无法稳定识别，
+  降低每码字节数、提高采集分辨率或切回单码。60 fps 需发送屏幕和接收摄像头均能跟上。
+- 保留原分辨率 Canvas 采集，不默认采用上游在 iPhone 上曾变慢的 ImageBitmap 路径；
+  没有新增跳动检测框、固定支架模式或声音提示。真机收益须实测，不承诺 2×/4× 或 100 KB/s。
+
 ## 安全说明
 
 - 加密只保护二维码光学传输内容；接收后保存到本地的文件由操作系统权限保护。
@@ -97,7 +113,28 @@ npm test           # 单元测试 + 模拟链路 e2e
 - `dist/Eternal-Wave.html` — 桌面主产物（单文件，file:// 双击即用）
 - `dist-pwa/` + `Eternal-Wave-PWA.zip` — iOS 预装包
 - `SHA256SUMS.txt` — 以上产物的校验和
-- `LICENSE` — MIT（含上游署名与派生声明）
+- `LICENSE` — AGPL-3.0-or-later；`LICENSE-MIT` — 原 MIT 部分声明
+
+### 完整对应源码与解码器重建
+
+页面页脚提供该版本源码入口，离线 HTML 内包含完整许可声明。运行应用不因源码链接产生网络请求；
+只有主动点击链接才访问 GitHub。
+
+```bash
+git clone --recurse-submodules https://github.com/ZeRuTian/eternal-wave.git
+cd eternal-wave
+git checkout v0.5.0
+git submodule update --init --recursive
+npm ci
+npm run build:all
+# 可选：重建已随仓库提供的解码器（会下载上游固定的 Emscripten 6.0.6）
+./third_party/decimen-codec/build.sh
+```
+
+解码器固定为 dc2b8c5，zxing-cpp 固定为 3e09874a9ca7c191d67101f302a1f53c71a118cc。
+生成的 third_party/decimen-codec/dist/decimen_codec.js 和 .wasm 可替换 vendor/decimen-codec/ 同名文件。
+来源、版权及原始发布物提交见 vendor/decimen-codec/NOTICE.md。GitHub 自动源码 ZIP 不包含子模块内容，
+请使用递归克隆，或 Release 附带的 Eternal-Wave-Source.tar.gz（包含子模块与构建脚本，不含 node_modules）。
 
 ## 已知限制
 

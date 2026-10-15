@@ -1,8 +1,8 @@
 {
   "name": "eternal-wave",
   "private": true,
-  "version": "0.4.3",
-  "license": "MIT",
+  "version": "0.5.0",
+  "license": "AGPL-3.0-or-later",
   "description": "Offline file transfer using fountain-coded animated QR codes — screen to camera, no network. 简体中文单页，支持最大 256 MB。",
   "type": "module",
   "scripts": {
@@ -16,7 +16,8 @@
     "preview": "vite preview",
     "icons": "node --import tsx build/make-icons.ts",
     "test": "node --import tsx --test tests/*.test.ts",
-    "verify:release": "node build/verify-release.mjs"
+    "verify:release": "node build/verify-release.mjs",
+    "build:source": "node build/source-archive.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",

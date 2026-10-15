@@ -71,6 +71,18 @@
         </select>
       </div>
 
+      <div class="transfer-preset">
+        <div class="field-copy">
+          <label for="cfg-layout">二维码布局</label>
+          <small id="layout-help">多码同时发送不同分片；请将全部二维码和白边收入画面。识别困难时切回单码，四码不保证更快。</small>
+        </div>
+        <select id="cfg-layout" aria-describedby="layout-help">
+          <option value="1" selected>单码 · 优先兼容</option>
+          <option value="2">双码 · 实验提速</option>
+          <option value="4">四码 · 实验提速</option>
+        </select>
+      </div>
+
       <details class="settings" id="send-settings">
         <summary>传输设置</summary>
         <div class="row">
@@ -214,13 +226,14 @@
           <summary>传输详情</summary>
           <div class="metrics" id="metrics" style="display: none">
             <div class="metric"><div class="k">采集 fps</div><div class="v" id="m-cap">—</div></div>
-            <div class="metric"><div class="k">解码 fps</div><div class="v amber" id="m-dec">—</div></div>
+            <div class="metric"><div class="k">解码数/秒</div><div class="v amber" id="m-dec">—</div></div>
             <div class="metric"><div class="k">有效速率</div><div class="v amber" id="m-rate">—</div></div>
             <div class="metric"><div class="k">已用时间</div><div class="v" id="m-time">—</div></div>
             <div class="metric"><div class="k">新帧/重复</div><div class="v" id="m-frames">—</div></div>
             <div class="metric"><div class="k">已收分段</div><div class="v" id="m-segments">—</div></div>
             <div class="metric"><div class="k">解码耗时</div><div class="v" id="m-decode-ms">—</div></div>
             <div class="metric"><div class="k">处理繁忙丢帧</div><div class="v" id="m-busy">—</div></div>
+            <div class="metric"><div class="k">解码方式</div><div class="v" id="m-engine">—</div></div>
           </div>
         </details>
 
@@ -243,6 +256,9 @@
               解码线程
               <select id="cfg-workers"></select>
             </label>
+            <label>解码方式
+              <select id="cfg-decoder"><option value="auto" selected>跟踪优化（自动回退）</option><option value="compat">兼容模式（对比测试）</option></select>
+            </label>
           </div>
           <p class="hint settings-actual" id="camera-actual">摄像头启动后生效。</p>
         </details>
@@ -252,7 +268,8 @@
     <footer class="site-footer">
       <span class="footer-id">
         <span>Eternal Wave 动态二维码文件传输</span>
-        <span>v%APP_VERSION% · build %BUILD_ID% · 派生自 Decimen Optical Transfer © 2026 Evan Crawley (Bash Alarmist) · MIT</span>
+        <span>v%APP_VERSION% · build %BUILD_ID% · 派生自 Decimen Optical Transfer © 2026 Evan Crawley (Bash Alarmist) · AGPL-3.0-or-later</span>
+        <a href="https://github.com/ZeRuTian/eternal-wave/tree/v%APP_VERSION%" target="_blank" rel="noopener">本版本完整对应源码与构建说明</a>
       </span>
     </footer>
     <script type="module" src="./main.ts"></script>

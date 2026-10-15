@@ -8,12 +8,13 @@ const standalonePath = resolve(root, "dist/Eternal-Wave.html");
 const pwaDir = resolve(root, "dist-pwa");
 const zipPath = resolve(root, "Eternal-Wave-PWA.zip");
 const checksumsPath = resolve(root, "SHA256SUMS.txt");
+const sourcePath = resolve(root, "Eternal-Wave-Source.tar.gz");
 
 function check(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-for (const path of [standalonePath, pwaDir, zipPath, checksumsPath]) {
+for (const path of [standalonePath, pwaDir, zipPath, checksumsPath, sourcePath]) {
   check(existsSync(path), `缺少发布产物：${path}`);
 }
 
@@ -28,7 +29,9 @@ check(/default-src 'none'/.test(standaloneNormalized), "单文件 CSP 未设置 
 check(/connect-src data: blob:/.test(standaloneNormalized), "单文件 CSP 未限制 connect-src");
 check(!/<script\b[^>]*\bsrc\s*=/i.test(standalone), "单文件仍含外部 script src");
 check(!/<link\b[^>]*rel=["']stylesheet["']/i.test(standalone), "单文件仍含外部样式表");
-check(!/(?:src|href)=["']https?:\/\//i.test(standalone), "单文件仍含 HTTP(S) 资源引用");
+check(!/<(?:script|link|img|iframe|source)\b[^>]*(?:src|href)=["']https?:\/\//i.test(standalone), "单文件仍含 HTTP(S) 资源引用");
+check(standalone.includes("GNU AFFERO GENERAL PUBLIC LICENSE"), "单文件缺少 AGPL 许可正文");
+check(standalone.includes("完整对应源码与构建说明"), "单文件缺少源码入口");
 
 const manifest = JSON.parse(readFileSync(resolve(pwaDir, "manifest.webmanifest"), "utf8"));
 check(manifest.start_url === "./", "PWA start_url 必须为 ./");
@@ -60,7 +63,7 @@ for (const file of requiredPwaFiles) {
 check(!zipEntries.some((name) => /success|decimen_logo|dist-pwa\/app\//.test(name)), "PWA ZIP 含陈旧文件");
 
 const checksumLines = readFileSync(checksumsPath, "utf8").trim().split(/\r?\n/);
-const expectedChecksumFiles = ["dist/Eternal-Wave.html", "Eternal-Wave-PWA.zip"];
+const expectedChecksumFiles = ["dist/Eternal-Wave.html", "Eternal-Wave-PWA.zip", "Eternal-Wave-Source.tar.gz"];
 for (const relative of expectedChecksumFiles) {
   const line = checksumLines.find((item) => item.endsWith(`  ${relative}`));
   check(line, `SHA256SUMS.txt 缺少 ${relative}`);
@@ -70,6 +73,10 @@ for (const relative of expectedChecksumFiles) {
 }
 
 const license = readFileSync(resolve(root, "LICENSE"), "utf8");
+const sourceEntries = execFileSync("tar", ["-tzf", sourcePath], {encoding:"utf8"});
+for (const path of ["app/main.ts", "third_party/decimen-codec/wrapper/decimen_codec.cpp", "third_party/decimen-codec/third_party/zxing-cpp/core/src/ReadBarcode.cpp", "third_party/decimen-codec/build.sh"]) {
+  check(sourceEntries.split("\n").includes(path), `对应源码包缺少 ${path}`);
+}
 check(license.includes("Copyright (c) 2026 Evan Crawley (Bash Alarmist)"), "LICENSE 缺少上游版权行");
 check(license.includes("Copyright (c) 2026 Eternal Wave contributors"), "LICENSE 缺少派生版权行");
 const readme = readFileSync(resolve(root, "README.md"), "utf8");

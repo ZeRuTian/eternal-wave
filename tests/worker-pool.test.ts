@@ -39,6 +39,15 @@ function harness() {
 
 const frame = (n: number) => new Uint8Array([n]);
 
+test("a multi-code report delivers every symbol once and releases the slot", () => {
+  const { pool, created, decoded } = harness();
+  pool.resize(1);
+  pool.submit({}, []);
+  created[0]!.onmessage?.({data:{id:1,bytes:frame(99),symbols:[1,2,3,4].map(n => ({bytes:frame(n)}))}} as MessageEvent);
+  assert.deepEqual(decoded.map(b => b[0]), [1,2,3,4]);
+  assert.equal(pool.busyCount, 0);
+});
+
 test("misses carry diagnostics, and replies from retired workers are ignored", () => {
   const workers: FakeWorker[] = [];
   const reports: number[] = [];
